@@ -35,9 +35,7 @@ Importantly, **Watcher-based Protection** is **system-agnostic** and can be inte
 
 ![](fig/overview.png)
 
-<p align="center">
-<img src="./fig/item_list.png" alt="item_list" width="700">
-</p>
+![](fig/item_list.png)
 
 # 📦 Installation
 

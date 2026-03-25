@@ -1,7 +1,9 @@
-# 🦞🛡️ ClawKeeper: Comprehensive Safety Protection for OpenClaw Agents Through Skills, Plugins, and Watchers (aka The Norton for OpenClaw)
+# 🦞🛡️ ClawKeeper: Comprehensive Safety Protection for OpenClaw Agents Through Skills, Plugins, and Watchers 
+
+<p align="center"><b><i style="font-size: 1.5em;">aka The Norton for OpenClaw</i></b></p>
 
 <p align="center">
-    <img src="./fig/logo.png" alt="OpenClaw" width="600">
+    <img src="./fig/logo.png" alt="OpenClaw" width="700">
 </p>
 
 <p align="center">
@@ -33,7 +35,9 @@ Importantly, **Watcher-based Protection** is **system-agnostic** and can be inte
 
 ![](fig/overview.png)
 
-![](fig/item_list.png)
+<p align="center">
+<img src="./fig/item_list.png" alt="item_list" width="500">
+</p>
 
 # 📦 Installation
 
@@ -146,8 +150,6 @@ For **detailed** configuration, command reference, and feature documentation, se
 
 # 💡 Features
 
-## What they do
-
 ![](fig/framework.png)
 
 - **Comprehensive Security Scanning:** Regularly scans the runtime environment, dependencies, and workspace for vulnerabilities, providing clear and actionable risk alerts before threats occur.
@@ -172,13 +174,13 @@ For **detailed** configuration, command reference, and feature documentation, se
 
 ---
 
-## Comparison
+# 🔬 Comparative Analysis of  Safety Paradigms in ClawKeeper
 
 ClawKeeper offers a comprehensive suite of security mechanisms, allowing users to freely select and combine them according to their specific requirements, whether prioritizing runtime efficiency or security performance.
 
 ![](fig/compare.png)
 
-## Experiment Results
+# 📈 Experiment Results
 
 To systematically assess the security capabilities of ClawKeeper, we construct a benchmark comprising seven categories of safety tasks, each containing 20 adversarial instances divided equally into 10 simple and 10 complex examples. We compare ClawKeeper against the most prominent open-source security repositories for OpenClaw-style agent ecosystems.
 The results showed that ClawKeeper achieved optimal defense performance.

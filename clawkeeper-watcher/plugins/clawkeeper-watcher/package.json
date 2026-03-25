@@ -1,0 +1,39 @@
+{
+  "name": "@xunyoyo/clawkeeper-watcher",
+  "version": "0.1.0",
+  "description": "Core-only security spine for OpenClaw agents",
+  "keywords": [
+    "audit",
+    "hardening",
+    "openclaw",
+    "plugin",
+    "security",
+    "skill-scanning",
+    "supply-chain"
+  ],
+  "license": "MIT",
+  "files": [
+    "src/",
+    "skill/",
+    "openclaw.plugin.json",
+    "README.md"
+  ],
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "scripts": {
+    "smoke:scan": "node --input-type=module -e \"import { scanSkill } from './src/index.js'; const report = await scanSkill('./examples/unsafe-skill'); console.log(JSON.stringify({ score: report.score, findings: report.findings.length }, null, 2));\"",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "openclaw": {
+    "type": "extension",
+    "extensions": [
+      "./src/index.js"
+    ]
+  }
+}

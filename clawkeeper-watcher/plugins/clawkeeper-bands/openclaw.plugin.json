@@ -1,0 +1,89 @@
+{
+  "id": "clawkeeper-bands",
+  "name": "Clawkeeper-Bands",
+  "description": "User-side bridge and approval plugin for Clawkeeper-connected OpenClaw gateways",
+  "version": "1.0.0",
+  "main": "dist/plugin/index.js",
+  "hooks": ["before_tool_call", "agent_end", "before_prompt_build"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "defaultAction": {
+        "type": "string",
+        "enum": ["ALLOW", "DENY", "ASK"],
+        "default": "ASK",
+        "description": "Default action for unknown tools"
+      },
+      "bridge": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether to forward agent_end context to a remote clawkeeper-watcher context-judge route"
+          },
+          "url": {
+            "type": "string",
+            "description": "Base URL for the remote Clawkeeper gateway hosting clawkeeper-watcher, e.g. http://127.0.0.1:19002"
+          },
+          "token": {
+            "type": "string",
+            "description": "Gateway token for the remote Clawkeeper gateway"
+          },
+          "model": {
+            "type": "string",
+            "description": "Deprecated. Ignored by the context-judge bridge."
+          },
+          "judgePath": {
+            "type": "string",
+            "description": "Relative HTTP path for the remote context-judge endpoint, defaults to /plugins/clawkeeper-watcher/context-judge"
+          },
+          "systemPrompt": {
+            "type": "string",
+            "description": "Deprecated. Ignored by the context-judge bridge."
+          },
+          "userPrompt": {
+            "type": "string",
+            "description": "Deprecated. Ignored by the context-judge bridge."
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "HTTP timeout in milliseconds"
+          },
+          "maxContextChars": {
+            "type": "integer",
+            "minimum": 1000,
+            "description": "Maximum serialized context characters forwarded to the remote context-judge"
+          },
+          "policy": {
+            "type": "object",
+            "description": "Policy hints included in the forwarded context for B to reason over",
+            "additionalProperties": false,
+            "properties": {
+              "maxRiskBeforeStop": {
+                "type": "string",
+                "enum": ["low", "medium", "high", "critical"]
+              },
+              "requireUserConfirmationFor": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "autoContinueAllowed": {
+                "type": "boolean"
+              },
+              "maxToolStepsWithoutUserTurn": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "treatCommandExecutionAsHighRisk": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

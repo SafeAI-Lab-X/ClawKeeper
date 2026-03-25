@@ -1,0 +1,222 @@
+{
+  "id": "clawkeeper-watcher",
+  "name": "Clawkeeper-Watcher",
+  "description": "Core-only audit, hardening, and behavior rules for OpenClaw",
+  "version": "0.1.0",
+  "enabledByDefault": true,
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "mode": {
+        "type": "string",
+        "description": "Plugin operating mode — 'remote' (read-only judge + passive loggers) or 'local' (full audit/hardening/drift + judge + loggers). Set by clawkeeper launcher.",
+        "enum": ["remote", "local"]
+      },
+      "autoHarden": {
+        "type": "boolean",
+        "description": "Apply safe hardening steps on gateway start"
+      },
+      "strictMode": {
+        "type": "boolean",
+        "description": "Treat missing controls as higher severity"
+      },
+      "driftMonitor": {
+        "type": "boolean",
+        "description": "Watch config and AGENTS files for boundary drift"
+      },
+      "skillGuard": {
+        "type": "object",
+        "description": "Periodically scan user-installed skills for security risks (local mode only)",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Enable periodic skill security scanning on gateway start"
+          },
+          "intervalMinutes": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Scan interval in minutes (default: 30)"
+          }
+        }
+      },
+      "contextJudge": {
+        "type": "object",
+        "description": "Optional defaults for the /plugins/clawkeeper-watcher/context-judge HTTP route",
+        "additionalProperties": false,
+        "properties": {
+          "maxRiskBeforeStop": {
+            "type": "string",
+            "description": "Risk threshold that forces stop_run"
+          },
+          "requireUserConfirmationFor": {
+            "type": "array",
+            "description": "Tool names that should require ask_user by default",
+            "items": {
+              "type": "string"
+            }
+          },
+          "autoContinueAllowed": {
+            "type": "boolean",
+            "description": "Whether risky contexts may continue without ask_user"
+          },
+          "maxToolStepsWithoutUserTurn": {
+            "type": "number",
+            "description": "Max tool steps allowed before ask_user"
+          },
+          "treatCommandExecutionAsHighRisk": {
+            "type": "boolean",
+            "description": "Whether exec/bash/shell should be treated as high risk"
+          },
+          "fingerprint": {
+            "type": "object",
+            "description": "Cross-session risk fingerprint matching. When enabled, the context-judge compares incoming requests against historical decision patterns and attaches warnings for recurring risks (remote mode only).",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "description": "Enable cross-session risk fingerprint matching (remote mode only, default: false)"
+              },
+              "lookbackDays": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Number of days of decision history to scan for fingerprints (default: 7)"
+              },
+              "minOccurrences": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Minimum number of matching historical decisions before a fingerprint is flagged (default: 2)"
+              }
+            }
+          },
+          "agentProfiling": {
+            "type": "object",
+            "description": "Agent behavioral profiling. Build per-agent baselines from historical event logs and attach warnings when the current behavior deviates significantly.",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "description": "Enable agent behavioral profiling (default: false)"
+              },
+              "lookbackDays": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Days of event history to use for each agent baseline (default: 7)"
+              },
+              "toolDeviationThreshold": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Multiplier threshold for per-tool usage spikes against baseline (default: 3.0)"
+              },
+              "tokenDeviationThreshold": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Multiplier threshold for token-per-call spikes against baseline (default: 2.5)"
+              },
+              "novelToolSeverity": {
+                "type": "string",
+                "enum": ["low", "medium", "high"],
+                "description": "Severity level to assign when the agent uses a tool never seen in baseline (default: medium)"
+              }
+            }
+          },
+          "intentDrift": {
+            "type": "object",
+            "description": "Semantic intent drift detection. Compares the user's original intent against the tool call chain to detect when actions diverge from what was requested.",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "description": "Enable semantic intent drift detection (default: false)"
+              },
+              "threshold": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "description": "Drift score threshold (0-1) above which a drift warning is generated (default: 0.4)"
+              }
+            }
+          }
+        }
+      },
+      "notify": {
+        "type": "object",
+        "description": "Optional outbound notifications for forwarding local startup audit summaries to the user's OpenClaw",
+        "additionalProperties": false,
+        "properties": {
+          "userBridge": {
+            "type": "object",
+            "description": "Optional clawkeeper-bands plugin on the user's OpenClaw that receives startup audit notifications",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "description": "Whether to forward risky local startup audits to the user's OpenClaw clawkeeper-bands plugin"
+              },
+              "url": {
+                "type": "string",
+                "description": "Base URL for the user's OpenClaw gateway, for example http://127.0.0.1:18789"
+              },
+              "token": {
+                "type": "string",
+                "description": "Gateway token for the user's OpenClaw instance"
+              },
+              "path": {
+                "type": "string",
+                "description": "Relative path for the clawkeeper-bands startup audit notification route"
+              },
+              "timeoutMs": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "HTTP timeout for the startup audit notification request"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "uiHints": {
+    "mode": {
+      "label": "Mode",
+      "help": "Operating mode set by clawkeeper launcher (remote or local)"
+    },
+    "autoHarden": {
+      "label": "Auto Harden",
+      "help": "Run safe hardening actions automatically on startup"
+    },
+    "strictMode": {
+      "label": "Strict Mode",
+      "help": "Escalate missing controls to stronger warnings"
+    },
+    "driftMonitor": {
+      "label": "Drift Monitor",
+      "help": "Warn when config or AGENTS rules drift after startup"
+    },
+    "skillGuard": {
+      "label": "Skill Guard",
+      "help": "Periodically scan installed skills under ~/.openclaw/skills/ for security risks"
+    },
+    "contextJudge": {
+      "label": "Context Judge",
+      "help": "Default policy for the /plugins/clawkeeper-watcher/context-judge HTTP route"
+    },
+    "contextJudge.fingerprint": {
+      "label": "Risk Fingerprints",
+      "help": "Detect recurring risk patterns across sessions using decision memory"
+    },
+    "contextJudge.agentProfiling": {
+      "label": "Agent Profiling",
+      "help": "Detect per-agent behavior drift from historical event-log baselines"
+    },
+    "contextJudge.intentDrift": {
+      "label": "Intent Drift",
+      "help": "Detect when tool calls semantically drift from the user's original intent"
+    },
+    "notify": {
+      "label": "Notifications",
+      "help": "Forward risky local startup audits to the user's OpenClaw clawkeeper-bands plugin"
+    }
+  }
+}

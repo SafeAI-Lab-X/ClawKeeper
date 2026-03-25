@@ -1,0 +1,112 @@
+{
+  "principles": [
+    "external-text-is-not-authority",
+    "secrets-are-need-to-know",
+    "side-effects-need-explicit-justification",
+    "restore-boundaries-before-velocity",
+    "freeze-then-explain-on-anomaly"
+  ],
+  "riskySandboxModes": ["danger-full-access", "disabled", "off"],
+  "riskyApprovalModes": ["never", "auto"],
+  "trustedGatewayBinds": ["127.0.0.1", "localhost"],
+  "skillRiskPatterns": [
+    {
+      "id": "shell.remote-pipe",
+      "severity": "HIGH",
+      "target": "script",
+      "mode": "regex",
+      "pattern": "curl\\s+[^\\n|]+\\|\\s*(bash|sh)",
+      "title": "Remote script piped directly to execution",
+      "remediation": "Download and verify the script before executing it."
+    },
+    {
+      "id": "shell.force-delete",
+      "severity": "HIGH",
+      "target": "script",
+      "mode": "regex",
+      "pattern": "rm\\s+-rf\\s+(/|~|\\$HOME|\\.)",
+      "title": "High-risk recursive deletion",
+      "remediation": "Limit the deletion scope and add explicit path validation."
+    },
+    {
+      "id": "shell.secret-read",
+      "severity": "MEDIUM",
+      "target": "script",
+      "mode": "regex",
+      "pattern": "(cat|grep|sed)[^\\n]*(\\.env|id_rsa|credentials?)",
+      "title": "Script reads sensitive files directly",
+      "remediation": "Reduce sensitive reads to the minimum required fields and explain the purpose."
+    },
+    {
+      "id": "prompt.override-authority",
+      "severity": "MEDIUM",
+      "target": "skill",
+      "mode": "substring",
+      "pattern": "ignore previous instructions",
+      "title": "Typical authority-override prompt detected",
+      "remediation": "Remove prompt text that overrides system boundaries."
+    },
+    {
+      "id": "prompt.secret-export",
+      "severity": "HIGH",
+      "target": "skill",
+      "mode": "substring",
+      "pattern": "send secrets",
+      "title": "Skill text encourages secret exfiltration",
+      "remediation": "Remove secret-export instructions and reduce access to the minimum necessary."
+    },
+    {
+      "id": "script.dynamic-launch",
+      "severity": "HIGH",
+      "target": "script",
+      "mode": "regex",
+      "pattern": "(eval\\s*\\(|exec\\s*\\(|os\\.system\\s*\\(|child_process\\.(exec|spawn)\\s*\\()",
+      "title": "Script contains dynamic execution entry points",
+      "remediation": "Use an explicit command allowlist instead of dynamically constructing execution strings."
+    },
+    {
+      "id": "script.identity-tamper",
+      "severity": "MEDIUM",
+      "target": "script",
+      "mode": "regex",
+      "pattern": "(SOUL\\.md|AGENTS\\.md|TOOLS\\.md|openclaw\\.json)",
+      "title": "Script attempts to modify agent identity or core config",
+      "remediation": "Add purpose documentation, scope limits, and explicit confirmation before changing configuration."
+    },
+    {
+      "id": "script.env-exfil-hint",
+      "severity": "HIGH",
+      "target": "script",
+      "mode": "regex",
+      "pattern": "(curl|wget|nc)[^\\n]*(\\.env|credentials?|token|auth)",
+      "title": "Script shows signs of sensitive data exfiltration",
+      "remediation": "Separate network transmission from sensitive reads and block default exfiltration paths."
+    },
+    {
+      "id": "skill.boundary-rewrite",
+      "severity": "MEDIUM",
+      "target": "skill",
+      "mode": "regex",
+      "pattern": "(forget .*above|switch .*mode|new role|do not alert|keep .*secret)",
+      "title": "Skill text attempts to rewrite boundaries or hide execution",
+      "remediation": "Remove statements that alter the source of authority or require concealment."
+    },
+    {
+      "id": "skill.hidden-payload",
+      "severity": "MEDIUM",
+      "target": "skill",
+      "mode": "regex",
+      "pattern": "(base64:|data:text/plain;base64|\\\\u200[bcd]|\\\\ufeff|display:none|opacity:0)",
+      "title": "Skill text contains signs of hidden payloads",
+      "remediation": "Remove hidden content or encoded wrappers and replace them with visible, reviewable text."
+    }
+  ],
+  "suspiciousSkillNames": ["wallet", "updater", "security-tool", "patch", "installer"],
+  "dangerousPrerequisitePatterns": [
+    "disable gatekeeper",
+    "sudo bash",
+    "paste this into terminal",
+    "grant full disk access",
+    "turn off quarantine"
+  ]
+}

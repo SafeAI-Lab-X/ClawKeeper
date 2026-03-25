@@ -1,0 +1,38 @@
+{
+  "id": "clawkeeper",
+  "name": "Clawkeeper",
+  "description": "Core-only audit, hardening, and behavior rules for OpenClaw",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "autoHarden": {
+        "type": "boolean",
+        "description": "Apply safe hardening steps on gateway start"
+      },
+      "strictMode": {
+        "type": "boolean",
+        "description": "Treat missing controls as higher severity"
+      },
+      "driftMonitor": {
+        "type": "boolean",
+        "description": "Watch config and AGENTS files for boundary drift"
+      }
+    }
+  },
+  "uiHints": {
+    "autoHarden": {
+      "label": "Auto Harden",
+      "help": "Run safe hardening actions automatically on startup"
+    },
+    "strictMode": {
+      "label": "Strict Mode",
+      "help": "Escalate missing controls to stronger warnings"
+    },
+    "driftMonitor": {
+      "label": "Drift Monitor",
+      "help": "Warn when config or AGENTS rules drift after startup"
+    }
+  }
+}

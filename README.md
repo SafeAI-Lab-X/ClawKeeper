@@ -189,6 +189,7 @@ The results showed that ClawKeeper achieved optimal defense performance.
 
 # 🔥 Updates
 - [2026-03-25] 🎉 ClawKeeper v1.0 has been released.
+- [2026-03-26] 🧠 We released our [paper](https://arxiv.org/abs/2603.24414)
 
 ---
 

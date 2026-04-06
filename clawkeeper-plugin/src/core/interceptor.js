@@ -14,6 +14,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 
+import { guardBeforeToolCall } from './path-guard.js';
+
 let debugLogger = null;
 
 /**
@@ -137,14 +139,19 @@ export function createToolLoggerHook(logger = null) {
   }
   
   return async (event, ctx) => {
+    const { toolName, params, runId, toolCallId } = event;
+    let guardResult = { block: false };
+
     try {
-      const { toolName, params, runId, toolCallId } = event;
-      
-      if (debugLogger) {
-        debugLogger.debug('[Clawkeeper Logger] Hook triggered: before_tool_call', { toolName });
-      }
-      
-      await logEvent('before_tool_call', {
+      guardResult = guardBeforeToolCall({ toolName, params });
+    } catch (error) {
+      console.error('[Clawkeeper] path-guard error:', error.message);
+      if (debugLogger) debugLogger.error('[Clawkeeper Logger] path-guard threw:', error.message);
+    }
+
+    try {
+      if (debugLogger) debugLogger.debug('[Clawkeeper Logger] Hook triggered: before_tool_call', { toolName });
+      await logEvent(guardResult.block ? 'blocked_tool_call' : 'before_tool_call', {
         toolName: toolName || 'unknown',
         paramsCount: Object.keys(params || {}).length,
         params: params || {},
@@ -153,14 +160,27 @@ export function createToolLoggerHook(logger = null) {
         agentId: ctx?.agentId || null,
         sessionKey: ctx?.sessionKey || null,
         sessionId: ctx?.sessionId || null,
+        ...(guardResult.block ? {
+          guard: {
+            rule: 'protected-path',
+            pattern: guardResult.matched,
+            candidate: guardResult.candidate,
+            resolved: guardResult.resolved,
+            severity: guardResult.severity,
+            reason: guardResult.reason,
+          }
+        } : {}),
       });
     } catch (error) {
-      console.error('[Clawkeeper] ✗ before_tool_call hook error:', error.message);
-      if (debugLogger) {
-        debugLogger.error('[Clawkeeper Logger] ✗ before_tool_call hook failed:', error.message);
-      }
+      console.error('[Clawkeeper] before_tool_call hook error:', error.message);
+      if (debugLogger) debugLogger.error('[Clawkeeper Logger] before_tool_call hook failed:', error.message);
     }
-    
+
+    if (guardResult.block) {
+      const reason = `Clawkeeper blocked access to protected path (${guardResult.severity || 'HIGH'}): ${guardResult.reason || guardResult.matched}. Candidate=${guardResult.candidate} Resolved=${guardResult.resolved}`;
+      console.warn(`[Clawkeeper] BLOCKED ${reason}`);
+      return { block: true, blockReason: reason };
+    }
     return {};
   };
 }

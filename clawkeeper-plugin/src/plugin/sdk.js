@@ -10,6 +10,7 @@ import {
   createMessageSendingHook,
   createLLMInputHook,
   createLLMOutputHook,
+  createBeforeAgentReplyHook,
 } from '../core/interceptor.js';
 
 export const clawkeeperPlugin = {
@@ -76,6 +77,15 @@ export const clawkeeperPlugin = {
       api.logger.info(`[${PLUGIN_NAME}] ✅ llm_output logger registered`);
     } catch (error) {
       api.logger.warn(`[${PLUGIN_NAME}] ⚠️  llm_output logger failed: ${error.message}`);
+    }
+
+    // 6. Token Budget Guard (before_agent_reply)
+    try {
+      const budgetHook = createBeforeAgentReplyHook(api.logger);
+      api.on('before_agent_reply', budgetHook);
+      api.logger.info(`[${PLUGIN_NAME}] ✅ before_agent_reply budget guard registered`);
+    } catch (error) {
+      api.logger.warn(`[${PLUGIN_NAME}] ⚠️  before_agent_reply budget guard failed: ${error.message}`);
     }
 
     api.on('gateway_start', async () => {

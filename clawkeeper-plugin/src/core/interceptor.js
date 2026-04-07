@@ -15,6 +15,9 @@ import path from 'node:path';
 import os from 'node:os';
 
 import { guardBeforeToolCall } from './path-guard.js';
+import { guardExecution } from './exec-gate.js';
+import { validateToolInput } from './input-validator.js';
+import { checkBudget, recordUsage, formatBudgetSummary } from './budget-guard.js';
 
 let debugLogger = null;
 
@@ -140,18 +143,82 @@ export function createToolLoggerHook(logger = null) {
   
   return async (event, ctx) => {
     const { toolName, params, runId, toolCallId } = event;
-    let guardResult = { block: false };
+    let budgetResult = { block: false };
+    let inputResult = { block: false };
+    let pathResult = { block: false };
+    let execResult = { block: false };
 
     try {
-      guardResult = guardBeforeToolCall({ toolName, params });
+      budgetResult = checkBudget();
     } catch (error) {
-      console.error('[Clawkeeper] path-guard error:', error.message);
-      if (debugLogger) debugLogger.error('[Clawkeeper Logger] path-guard threw:', error.message);
+      console.error('[Clawkeeper] budget-guard check error:', error.message);
+      if (debugLogger) debugLogger.error('[Clawkeeper Logger] budget-guard threw:', error.message);
     }
 
     try {
+      if (!budgetResult.block) inputResult = validateToolInput(toolName, params);
+    } catch (error) {
+      console.error('[Clawkeeper] input-validator error:', error.message);
+      if (debugLogger) debugLogger.error('[Clawkeeper Logger] input-validator threw:', error.message);
+    }
+
+    if (!inputResult.block) {
+      try {
+        pathResult = guardBeforeToolCall({ toolName, params });
+      } catch (error) {
+        console.error('[Clawkeeper] path-guard error:', error.message);
+        if (debugLogger) debugLogger.error('[Clawkeeper Logger] path-guard threw:', error.message);
+      }
+    }
+
+    if (!inputResult.block && !pathResult.block) {
+      try {
+        execResult = guardExecution({ toolName, params });
+      } catch (error) {
+        console.error('[Clawkeeper] exec-gate error:', error.message);
+        if (debugLogger) debugLogger.error('[Clawkeeper Logger] exec-gate threw:', error.message);
+      }
+    }
+
+    const blocked = budgetResult.block || inputResult.block || pathResult.block || execResult.block;
+    const guardMeta = budgetResult.block
+      ? {
+          rule: 'token-budget',
+          severity: 'HIGH',
+          status: budgetResult.status,
+          usage: budgetResult.usage,
+          limits: budgetResult.limits,
+          reason: 'token budget exhausted',
+        }
+      : inputResult.block
+      ? {
+          rule: 'input-validation',
+          severity: 'MEDIUM',
+          reason: inputResult.reason,
+          errors: inputResult.errors,
+        }
+      : pathResult.block
+      ? {
+          rule: 'protected-path',
+          pattern: pathResult.matched,
+          candidate: pathResult.candidate,
+          resolved: pathResult.resolved,
+          severity: pathResult.severity,
+          reason: pathResult.reason,
+        }
+      : execResult.block
+      ? {
+          rule: 'dangerous-command',
+          pattern: execResult.matched,
+          severity: execResult.severity,
+          reason: execResult.reason,
+          command: execResult.command,
+        }
+      : null;
+
+    try {
       if (debugLogger) debugLogger.debug('[Clawkeeper Logger] Hook triggered: before_tool_call', { toolName });
-      await logEvent(guardResult.block ? 'blocked_tool_call' : 'before_tool_call', {
+      await logEvent(blocked ? 'blocked_tool_call' : 'before_tool_call', {
         toolName: toolName || 'unknown',
         paramsCount: Object.keys(params || {}).length,
         params: params || {},
@@ -160,24 +227,30 @@ export function createToolLoggerHook(logger = null) {
         agentId: ctx?.agentId || null,
         sessionKey: ctx?.sessionKey || null,
         sessionId: ctx?.sessionId || null,
-        ...(guardResult.block ? {
-          guard: {
-            rule: 'protected-path',
-            pattern: guardResult.matched,
-            candidate: guardResult.candidate,
-            resolved: guardResult.resolved,
-            severity: guardResult.severity,
-            reason: guardResult.reason,
-          }
-        } : {}),
+        ...(guardMeta ? { guard: guardMeta } : {}),
       });
     } catch (error) {
       console.error('[Clawkeeper] before_tool_call hook error:', error.message);
       if (debugLogger) debugLogger.error('[Clawkeeper Logger] before_tool_call hook failed:', error.message);
     }
 
-    if (guardResult.block) {
-      const reason = `Clawkeeper blocked access to protected path (${guardResult.severity || 'HIGH'}): ${guardResult.reason || guardResult.matched}. Candidate=${guardResult.candidate} Resolved=${guardResult.resolved}`;
+    if (budgetResult.block) {
+      const reason = `Clawkeeper blocked tool call: token budget exhausted (${formatBudgetSummary(budgetResult)})`;
+      console.warn(`[Clawkeeper] BLOCKED ${reason}`);
+      return { block: true, blockReason: reason };
+    }
+    if (inputResult.block) {
+      const reason = `Clawkeeper blocked malformed tool input for '${toolName}': ${inputResult.reason}`;
+      console.warn(`[Clawkeeper] BLOCKED ${reason}`);
+      return { block: true, blockReason: reason };
+    }
+    if (pathResult.block) {
+      const reason = `Clawkeeper blocked access to protected path (${pathResult.severity || 'HIGH'}): ${pathResult.reason || pathResult.matched}. Candidate=${pathResult.candidate} Resolved=${pathResult.resolved}`;
+      console.warn(`[Clawkeeper] BLOCKED ${reason}`);
+      return { block: true, blockReason: reason };
+    }
+    if (execResult.block) {
+      const reason = `Clawkeeper blocked dangerous command (${execResult.severity || 'HIGH'}) [${execResult.matched}]: ${execResult.reason}. Command=${execResult.command}`;
       console.warn(`[Clawkeeper] BLOCKED ${reason}`);
       return { block: true, blockReason: reason };
     }
@@ -330,6 +403,25 @@ export function createLLMOutputHook(logger = null) {
         totalResponseLength = event.assistantTexts.reduce((sum, text) => sum + (text?.length || 0), 0);
       }
       
+      // Accumulate usage into the rolling budget. Pure observation —
+      // any actual blocking happens in before_agent_reply / before_tool_call.
+      let budgetState = null;
+      try {
+        if (event.usage) {
+          budgetState = recordUsage({
+            input: event.usage.input,
+            output: event.usage.output,
+          });
+          if (budgetState.status === 'warn') {
+            console.warn(`[Clawkeeper] BUDGET WARN ${formatBudgetSummary(budgetState)}`);
+          } else if (budgetState.status === 'over') {
+            console.warn(`[Clawkeeper] BUDGET OVER ${formatBudgetSummary(budgetState)}`);
+          }
+        }
+      } catch (err) {
+        if (debugLogger) debugLogger.error('[Clawkeeper Logger] budget recordUsage failed:', err.message);
+      }
+
       await logEvent('llm_output', {
         runId: event.runId || null,
         sessionId: event.sessionId || null,
@@ -345,6 +437,11 @@ export function createLLMOutputHook(logger = null) {
         totalTokens: event.usage?.total || null,
         agentId: ctx?.agentId || null,
         sessionKey: ctx?.sessionKey || null,
+        budget: budgetState ? {
+          status: budgetState.status,
+          usage: budgetState.usage,
+          limits: budgetState.limits,
+        } : null,
       });
     } catch (error) {
       console.error('[Clawkeeper] ✗ llm_output hook error:', error.message);
@@ -354,6 +451,56 @@ export function createLLMOutputHook(logger = null) {
     }
     
     return {};
+  };
+}
+
+/**
+ * Hook: before_agent_reply
+ * Primary token-budget enforcement point. When the rolling budget is
+ * exhausted we short-circuit the LLM call by returning a synthetic
+ * reply, so no further tokens are consumed.
+ *
+ * Result shape (from openclaw plugin SDK):
+ *   { handled: boolean, reply?: ReplyPayload, reason?: string }
+ */
+export function createBeforeAgentReplyHook(logger = null) {
+  if (logger) {
+    setDebugLogger(logger);
+  }
+
+  return async (event, ctx) => {
+    let state = { block: false };
+    try {
+      state = checkBudget();
+    } catch (err) {
+      if (debugLogger) debugLogger.error('[Clawkeeper Logger] before_agent_reply budget check failed:', err.message);
+    }
+
+    if (!state.block) return;
+
+    const summary = formatBudgetSummary(state);
+    const text = `⛔ Clawkeeper: token budget exhausted (${summary}). Agent halted for this turn. Reset the budget file or wait for the next window to resume.`;
+    console.warn(`[Clawkeeper] BLOCKED LLM reply: ${summary}`);
+
+    try {
+      await logEvent('blocked_agent_reply', {
+        rule: 'token-budget',
+        severity: 'HIGH',
+        status: state.status,
+        usage: state.usage,
+        limits: state.limits,
+        agentId: ctx?.agentId || null,
+        sessionKey: ctx?.sessionKey || null,
+      });
+    } catch (err) {
+      if (debugLogger) debugLogger.error('[Clawkeeper Logger] blocked_agent_reply log failed:', err.message);
+    }
+
+    return {
+      handled: true,
+      reason: 'clawkeeper-budget-exhausted',
+      reply: { kind: 'text', text },
+    };
   };
 }
 

@@ -149,9 +149,73 @@
     { "pattern": "/etc/passwd",                 "severity": "HIGH",     "reason": "System user database" },
     { "pattern": "/etc/ssh/**",                 "severity": "CRITICAL", "reason": "System SSH config" }
   ],
+  "budgetGuard": {
+    "enabled": true,
+    "windowDays": 1,
+    "warnRatio": 0.8,
+    "limits": {
+      "input": 1000,
+      "output": 500,
+      "total": 1500
+    }
+  },
+  "inputValidator": {
+    "enabled": true,
+    "failurePolicy": "fail-open",
+    "unknownToolPolicy": "pass"
+  },
   "pathGuard": {
     "enabled": true,
     "failurePolicy": "fail-closed",
     "bashLikeTools": ["bash", "shell", "exec", "command", "run_command", "execute_command", "terminal"]
+  },
+  "executionGate": {
+    "enabled": true,
+    "failurePolicy": "fail-closed",
+    "bashLikeTools": ["bash", "shell", "exec", "command", "run_command", "execute_command", "terminal"],
+    "dangerousCommands": [
+      {
+        "id": "exec.rm-rf-root",
+        "severity": "CRITICAL",
+        "pattern": "\\brm\\s+(-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*|-[a-zA-Z]*f[a-zA-Z]*r[a-zA-Z]*)\\s+(/|~|\\$HOME|/\\*|~/\\*)(\\s|$)",
+        "reason": "Recursive force deletion targeting root or home"
+      },
+      {
+        "id": "exec.disk-wipe",
+        "severity": "CRITICAL",
+        "pattern": "\\b(mkfs(\\.[a-z0-9]+)?|dd\\s+[^\\n]*of=/dev/|format\\s+[a-zA-Z]:)",
+        "reason": "Disk wipe / low-level format"
+      },
+      {
+        "id": "exec.curl-pipe-shell",
+        "severity": "HIGH",
+        "pattern": "\\b(curl|wget)\\b[^\\n|]*\\|\\s*(bash|sh|zsh|python[0-9.]*)",
+        "reason": "Remote script piped directly into a shell interpreter"
+      },
+      {
+        "id": "exec.fork-bomb",
+        "severity": "CRITICAL",
+        "pattern": ":\\(\\)\\s*\\{\\s*:\\s*\\|\\s*:\\s*&\\s*\\}\\s*;\\s*:",
+        "reason": "Classic bash fork bomb"
+      },
+      {
+        "id": "exec.system-shutdown",
+        "severity": "HIGH",
+        "pattern": "\\b(shutdown|reboot|halt|poweroff|init\\s+0|init\\s+6)\\b",
+        "reason": "System power-state change"
+      },
+      {
+        "id": "exec.firewall-flush",
+        "severity": "HIGH",
+        "pattern": "\\b(iptables|nft)\\b[^\\n]*\\s-F\\b",
+        "reason": "Flushing firewall rules"
+      },
+      {
+        "id": "exec.chmod-world",
+        "severity": "HIGH",
+        "pattern": "\\bchmod\\s+(-R\\s+)?[0-7]?777\\b",
+        "reason": "Granting world-writable permissions"
+      }
+    ]
   }
 }

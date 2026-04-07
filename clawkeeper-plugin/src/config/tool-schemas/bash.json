@@ -1,0 +1,27 @@
+{
+  "tool": "bash",
+  "aliases": [
+    "shell",
+    "exec"
+  ],
+  "type": "object",
+  "required": [
+    "command"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "command": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8000,
+      "pattern": "^[^\\u0000]*$"
+    },
+    "cwd": {
+      "type": "string",
+      "maxLength": 4096
+    },
+    "timeout": {
+      "type": "number"
+    }
+  }
+}

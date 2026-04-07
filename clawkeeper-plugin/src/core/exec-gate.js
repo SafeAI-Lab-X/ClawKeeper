@@ -28,6 +28,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_RULES_PATH = path.join(__dirname, '..', 'config', 'core-rules.json');
 
 let cachedGate = null;
+const DEFAULT_FAILURE_POLICY = 'fail-closed';
 
 /**
  * Load (and cache) executionGate rules from core-rules.json.
@@ -99,9 +100,13 @@ export function guardExecution(event) {
   try {
     loaded = loadExecGate();
   } catch (err) {
-    // Couldn't even read the rule file. Default to fail-open here so a
-    // broken config doesn't wedge the whole agent; the interceptor logs
-    // the error separately.
+    // Honour the last-known failurePolicy (or the module default) so
+    // that a corrupted/missing config file cannot silently disable the
+    // gate when the operator configured fail-closed.
+    const policy = cachedGate?.config?.failurePolicy || DEFAULT_FAILURE_POLICY;
+    if (policy === 'fail-closed') {
+      return { block: true, error: err.message, reason: 'exec-gate rule load failed (fail-closed policy)' };
+    }
     return { block: false, error: err.message };
   }
   const { rules, config } = loaded;

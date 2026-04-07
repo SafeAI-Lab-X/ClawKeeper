@@ -26,6 +26,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_RULES_PATH = path.join(__dirname, '..', 'config', 'core-rules.json');
 
 let cachedRules = null;
+const DEFAULT_FAILURE_POLICY = 'fail-closed';
 
 /**
  * Load (and cache) protected paths + config from core-rules.json.
@@ -191,9 +192,10 @@ export function guardBeforeToolCall(event) {
   try {
     loaded = loadProtectedPaths();
   } catch (err) {
-    // If we can't even load the rules, err on the side of caution only
-    // when the configured policy is fail-closed. Default = fail-open to
-    // avoid wedging users on broken configs.
+    const policy = cachedRules?.config?.failurePolicy || DEFAULT_FAILURE_POLICY;
+    if (policy === 'fail-closed') {
+      return { block: true, error: err.message, reason: 'path-guard rule load failed (fail-closed policy)' };
+    }
     return { block: false, error: err.message };
   }
   const { rules, config } = loaded;

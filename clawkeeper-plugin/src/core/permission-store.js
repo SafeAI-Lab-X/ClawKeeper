@@ -39,6 +39,45 @@ function workspaceDir() {
   return process.env.OPENCLAW_WORKSPACE || path.join(os.homedir(), '.openclaw', 'workspace');
 }
 
+/* ── HMAC integrity protection ── */
+
+function resolveHmacKeyFile() {
+  return path.join(workspaceDir(), 'clawkeeper', '.hmac-key');
+}
+
+/**
+ * Return the HMAC key. Priority:
+ *   1. CLAWKEEPER_HMAC_KEY env var
+ *   2. Auto-generated key persisted in $WS/clawkeeper/.hmac-key (mode 0600)
+ */
+function getHmacKey() {
+  if (process.env.CLAWKEEPER_HMAC_KEY) return process.env.CLAWKEEPER_HMAC_KEY;
+  const keyFile = resolveHmacKeyFile();
+  try {
+    return fs.readFileSync(keyFile, 'utf-8').trim();
+  } catch {
+    // First run: generate a random key and persist it.
+    const key = crypto.randomBytes(32).toString('hex');
+    try {
+      fs.mkdirSync(path.dirname(keyFile), { recursive: true });
+      fs.writeFileSync(keyFile, key, { mode: 0o600 });
+    } catch (err) {
+      console.error('[Clawkeeper] permission-store: failed to persist HMAC key:', err.message);
+    }
+    return key;
+  }
+}
+
+function computeHmac(entries) {
+  const payload = JSON.stringify(entries);
+  return crypto.createHmac('sha256', getHmacKey()).update(payload).digest('hex');
+}
+
+function verifyHmac(store) {
+  if (!store._hmac) return false;
+  return store._hmac === computeHmac(store.entries);
+}
+
 export function resolveSessionFile() {
   return path.join(workspaceDir(), 'clawkeeper', 'permissions-session.json');
 }
@@ -55,6 +94,12 @@ function readStore(filePath) {
   try {
     const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
     if (!raw || typeof raw !== 'object' || !Array.isArray(raw.entries)) return freshStore();
+    // Verify HMAC — a missing or invalid signature means the file was
+    // tampered with (or pre-dates the HMAC feature). Treat as empty.
+    if (raw.entries.length > 0 && !verifyHmac(raw)) {
+      console.warn(`[Clawkeeper] permission-store: HMAC verification failed for ${filePath} — treating as empty (possible tampering)`);
+      return freshStore();
+    }
     return raw;
   } catch {
     return freshStore();
@@ -63,6 +108,8 @@ function readStore(filePath) {
 
 function writeStore(filePath, store) {
   try {
+    // Compute HMAC over entries before persisting.
+    store._hmac = computeHmac(store.entries);
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     const tmp = filePath + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(store, null, 2));

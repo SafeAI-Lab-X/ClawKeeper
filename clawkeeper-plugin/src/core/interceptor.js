@@ -157,25 +157,6 @@ export function createToolLoggerHook(logger = null) {
       if (debugLogger) debugLogger.error('[Clawkeeper Logger] permission-store threw:', error.message);
     }
 
-    // Persistent allow short-circuits all downstream gates.
-    if (permResult.decision === 'allow') {
-      try {
-        await logEvent('before_tool_call', {
-          toolName: toolName || 'unknown',
-          paramsCount: Object.keys(params || {}).length,
-          params: params || {},
-          runId: runId || null,
-          toolCallId: toolCallId || null,
-          agentId: ctx?.agentId || null,
-          sessionKey: ctx?.sessionKey || null,
-          sessionId: ctx?.sessionId || null,
-          permission: { decision: 'allow', scope: permResult.scope, fingerprint: permResult.fingerprint },
-        });
-      } catch {}
-      console.warn(`[Clawkeeper] PERMITTED ${toolName} via persistent allow (${permResult.scope}) fp=${permResult.fingerprint}`);
-      return {};
-    }
-
     // Persistent deny is a hard block, regardless of any rule outcome.
     if (permResult.decision === 'deny') {
       const reason = `Clawkeeper blocked tool call by persistent deny (${permResult.scope}) fp=${permResult.fingerprint}`;
@@ -196,6 +177,9 @@ export function createToolLoggerHook(logger = null) {
       return { block: true, blockReason: reason };
     }
 
+    // Budget-guard and input-validator always run, even under a
+    // persistent allow — resource limits and structural validation
+    // should never be bypassed.
     try {
       budgetResult = checkBudget();
     } catch (error) {
@@ -210,7 +194,28 @@ export function createToolLoggerHook(logger = null) {
       if (debugLogger) debugLogger.error('[Clawkeeper Logger] input-validator threw:', error.message);
     }
 
-    if (!inputResult.block) {
+    // Persistent allow skips path-guard and exec-gate (user already
+    // authorized this specific operation), but budget and input
+    // validation above still applied.
+    if (permResult.decision === 'allow' && !budgetResult.block && !inputResult.block) {
+      try {
+        await logEvent('before_tool_call', {
+          toolName: toolName || 'unknown',
+          paramsCount: Object.keys(params || {}).length,
+          params: params || {},
+          runId: runId || null,
+          toolCallId: toolCallId || null,
+          agentId: ctx?.agentId || null,
+          sessionKey: ctx?.sessionKey || null,
+          sessionId: ctx?.sessionId || null,
+          permission: { decision: 'allow', scope: permResult.scope, fingerprint: permResult.fingerprint },
+        });
+      } catch {}
+      console.warn(`[Clawkeeper] PERMITTED ${toolName} via persistent allow (${permResult.scope}) fp=${permResult.fingerprint}`);
+      return {};
+    }
+
+    if (!inputResult.block && permResult.decision !== 'allow') {
       try {
         pathResult = guardBeforeToolCall({ toolName, params });
       } catch (error) {
@@ -219,7 +224,7 @@ export function createToolLoggerHook(logger = null) {
       }
     }
 
-    if (!inputResult.block && !pathResult.block) {
+    if (!inputResult.block && !pathResult.block && permResult.decision !== 'allow') {
       try {
         execResult = guardExecution({ toolName, params });
       } catch (error) {

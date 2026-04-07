@@ -32,6 +32,7 @@ const DEFAULT_RULES_PATH = path.join(__dirname, '..', 'config', 'core-rules.json
 const DEFAULT_SCHEMA_DIR = path.join(__dirname, '..', 'config', 'tool-schemas');
 
 let cached = null;
+const DEFAULT_FAILURE_POLICY = 'fail-open';
 
 /** Load schemas + config; cached on first call. */
 export function loadValidator(rulesPath = DEFAULT_RULES_PATH, schemaDir = DEFAULT_SCHEMA_DIR) {
@@ -159,6 +160,10 @@ export function validateToolInput(toolName, params) {
   try {
     loaded = loadValidator();
   } catch (err) {
+    const policy = cached?.config?.failurePolicy || DEFAULT_FAILURE_POLICY;
+    if (policy === 'fail-closed') {
+      return { block: true, error: err.message, reason: 'input-validator load failed (fail-closed policy)' };
+    }
     return { block: false, error: err.message };
   }
   const { schemas, config } = loaded;

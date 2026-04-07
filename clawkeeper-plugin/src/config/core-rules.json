@@ -147,7 +147,8 @@
     { "pattern": "/etc/sudoers",                "severity": "CRITICAL", "reason": "Sudo privilege config" },
     { "pattern": "/etc/sudoers.d/**",           "severity": "CRITICAL", "reason": "Sudo privilege config" },
     { "pattern": "/etc/passwd",                 "severity": "HIGH",     "reason": "System user database" },
-    { "pattern": "/etc/ssh/**",                 "severity": "CRITICAL", "reason": "System SSH config" }
+    { "pattern": "/etc/ssh/**",                 "severity": "CRITICAL", "reason": "System SSH config" },
+    { "pattern": "~/.openclaw/workspace/clawkeeper/.hmac-key", "severity": "CRITICAL", "reason": "Clawkeeper permission HMAC key" }
   ],
   "budgetGuard": {
     "enabled": true,

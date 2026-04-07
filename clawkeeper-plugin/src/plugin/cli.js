@@ -11,6 +11,14 @@ import { formatConsoleReport, formatSkillScanReport } from '../reporters/console
 import { formatJsonReport } from '../reporters/json-reporter.js';
 import { PLUGIN_ID, PLUGIN_NAME } from '../core/metadata.js';
 import { readLogFile, getLogFiles, getTodayLogPath } from '../core/interceptor.js';
+import {
+  grantPermission,
+  revokePermission,
+  listPermissions,
+  resetSessionPermissions,
+  resetForeverPermissions,
+  fingerprintFor,
+} from '../core/permission-store.js';
 import { scanLogsForSecurityRisks, formatScanResults, saveSecurityScanReport } from '../core/security-scanner.js';
 
 export function registerCliCommands({ program, config }) {
@@ -220,6 +228,71 @@ export function registerCliCommands({ program, config }) {
     .action(async () => {
       const logPath = await getTodayLogPath();
       console.log(`📁 Today's log file: ${logPath}`);
+    });
+
+  const perm = root.command('permission').description('Manage persistent allow/deny decisions for tool calls');
+
+  perm.command('allow')
+    .description('Persist an allow decision for a (tool, command/path) pair')
+    .requiredOption('--tool <name>', 'Tool name (e.g. exec, bash, read_file)')
+    .option('--command <text>', 'Command text (for bash-like tools)')
+    .option('--path <p>', 'File path (for read/write tools)')
+    .option('--scope <s>', 'session | forever', 'forever')
+    .option('--reason <text>', 'Optional human-readable reason')
+    .action((opts) => {
+      const params = opts.command ? { command: opts.command } : opts.path ? { path: opts.path } : {};
+      const r = grantPermission({ tool: opts.tool, params, decision: 'allow', scope: opts.scope, reason: opts.reason });
+      console.log(`✅ allow recorded scope=${r.scope} fp=${r.fingerprint}`);
+    });
+
+  perm.command('deny')
+    .description('Persist a deny decision for a (tool, command/path) pair')
+    .requiredOption('--tool <name>', 'Tool name')
+    .option('--command <text>', 'Command text (for bash-like tools)')
+    .option('--path <p>', 'File path (for read/write tools)')
+    .option('--scope <s>', 'session | forever', 'forever')
+    .option('--reason <text>', 'Optional human-readable reason')
+    .action((opts) => {
+      const params = opts.command ? { command: opts.command } : opts.path ? { path: opts.path } : {};
+      const r = grantPermission({ tool: opts.tool, params, decision: 'deny', scope: opts.scope, reason: opts.reason });
+      console.log(`⛔ deny recorded scope=${r.scope} fp=${r.fingerprint}`);
+    });
+
+  perm.command('list')
+    .description('List persisted permission entries')
+    .option('--scope <s>', 'session | forever (default: both)')
+    .action((opts) => {
+      const entries = listPermissions(opts.scope || null);
+      if (entries.length === 0) {
+        console.log('📭 no permission entries');
+        return;
+      }
+      for (const e of entries) {
+        console.log(`[${e.scope.padEnd(7)}] ${e.decision.toUpperCase().padEnd(5)} tool=${e.tool} fp=${e.fingerprint} sample=${JSON.stringify(e.sample)}`);
+      }
+    });
+
+  perm.command('revoke')
+    .description('Remove a persisted permission entry')
+    .requiredOption('--tool <name>', 'Tool name')
+    .option('--command <text>', 'Command text used when granting')
+    .option('--path <p>', 'Path used when granting')
+    .option('--fingerprint <fp>', 'Fingerprint (alternative to --command/--path)')
+    .option('--scope <s>', 'session | forever', 'forever')
+    .action((opts) => {
+      const fp = opts.fingerprint
+        || fingerprintFor(opts.tool, opts.command ? { command: opts.command } : opts.path ? { path: opts.path } : {});
+      const r = revokePermission({ tool: opts.tool, fingerprint: fp, scope: opts.scope });
+      console.log(`🗑  removed=${r.removed} scope=${opts.scope} fp=${fp}`);
+    });
+
+  perm.command('clear')
+    .description('Wipe all permission entries at the given scope')
+    .option('--scope <s>', 'session | forever', 'session')
+    .action((opts) => {
+      if (opts.scope === 'forever') resetForeverPermissions();
+      else resetSessionPermissions();
+      console.log(`🧹 cleared scope=${opts.scope}`);
     });
 
   root.command('scan-skill')

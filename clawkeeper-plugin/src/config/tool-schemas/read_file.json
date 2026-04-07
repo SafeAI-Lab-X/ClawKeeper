@@ -1,0 +1,17 @@
+{
+  "tool": "read_file",
+  "aliases": ["read", "fs_read", "file_read"],
+  "type": "object",
+  "required": ["path"],
+  "additionalProperties": true,
+  "properties": {
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^[^\\u0000\\n\\r]*$"
+    },
+    "offset": { "type": "number" },
+    "limit": { "type": "number" }
+  }
+}

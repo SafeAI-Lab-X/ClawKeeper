@@ -12,6 +12,7 @@ import {
   createLLMOutputHook,
   createBeforeAgentReplyHook,
 } from '../core/interceptor.js';
+import { resetSessionPermissions } from '../core/permission-store.js';
 
 export const clawkeeperPlugin = {
   id: PLUGIN_ID,
@@ -30,6 +31,15 @@ export const clawkeeperPlugin = {
     api.registerCli((ctx) => registerCliCommands(ctx), {
       commands: [PLUGIN_ID]
     });
+
+    // Wipe session-scope permissions on every plugin load so they don't
+    // leak across runs. Forever-scope entries persist by design.
+    try {
+      resetSessionPermissions();
+      api.logger.info(`[${PLUGIN_NAME}] session permissions reset`);
+    } catch (error) {
+      api.logger.warn(`[${PLUGIN_NAME}] session permissions reset failed: ${error.message}`);
+    }
 
     // ========== Event Loggers - Hook Registration ==========
     // Log all events to: workspace/log/YYYY-MM-DD.jsonl

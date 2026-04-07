@@ -66,7 +66,61 @@
 
 `before_agent_reply` 主闸门只在 OpenClaw 的 channel-dispatch 路径（gateway 模式）触发，`openclaw agent --local`（embedded 模式）不跑该层 hook，因此 embedded 下的 LLM 调用本身仍会发生一次，token 会被叠加进下一轮预算；但工具调用层的副闸门照常生效，agent 拿不到任何工具能力，实质上被冻住。完全 0-token 严格阻断需要把判决层下沉到 watcher（v1.2 目标），届时通过 watcher remote 的 cost 估算 + 跨 agent 共享预算实现真正的"前置不调 LLM"。
 
-### 功能二
+### 功能二 权限持久化
+
+实现层：plugin，挂在 OpenClaw 的 `before_tool_call` hook 上，作为四道闸门之前最高优先级的"零号闸门"，与 budget/input/path/exec 串联，在 plugin 进程内同步决策。
+
+实现内容：在 plugin 进程内维护两份 JSON 状态文件——`permissions-session.json`（每次 plugin 启动清空）与 `permissions-forever.json`（跨进程持久）。AI 调用工具前先按 `(toolName, sha256(normalized_command|path))` 指纹查表：命中 `allow` 直接放行并跳过下游所有规则；命中 `deny` 立即同步阻断；未命中再走原有四道闸门。bash 类工具与 read/write 类工具有专门的指纹规则，bash/exec/shell/command 等别名都被规范化到同一指纹。决策由用户通过 `openclaw clawkeeper permission allow|deny|list|revoke|clear` CLI 子命令离线写入，绕开 plugin 同步 hook 无法弹窗的限制。配套 budget-guard 新增 `unlimited` 开关（默认 true），让权限验证不被旧的小额度配额干扰，单测通过 `CLAWKEEPER_BUDGET_FORCE=1` 环境变量强制走限额路径。
+
+改动部分：
+
+| 文件                            | 类型 | 内容                                                         |
+| :------------------------------ | :--- | :----------------------------------------------------------- |
+| `src/core/permission-store.js`  | 新建 | 双 store 加载/原子写、指纹生成（bash/path/json 三类规范化）、`checkPermission` 优先级查询（forever > session, deny > allow）、`grantPermission` 幂等插入、`revokePermission`、`listPermissions`、`resetSessionPermissions` |
+| `src/core/interceptor.js`       | 改   | 导入 permission-store；`before_tool_call` hook 在四道闸门**最前**新增零号闸门：`allow` 短路返回 `{}` 跳过所有规则、`deny` 返回 `{ block: true, blockReason }`，并在日志中带 `permission` 元数据 |
+| `src/plugin/sdk.js`             | 改   | 导入 `resetSessionPermissions`，在 `register(api)` 入口同步调用，确保每次 plugin 加载时 session 文件被清空 |
+| `src/plugin/cli.js`             | 改   | 新增 `clawkeeper permission` 子命令组：`allow` / `deny`（`--tool/--command/--path/--scope/--reason`）、`list`（`--scope`）、`revoke`（`--tool/--command/--path/--fingerprint/--scope`）、`clear`（`--scope`） |
+| `src/config/core-rules.json`    | 改   | 新增 `exec.permission-test` sentinel 规则（HIGH，命中 `\\bclawkeeper-permission-test\\b`）作为权限验证专用哨兵，零误伤；同时给 `budgetGuard` 加 `unlimited: true` 开关并把测试限额抬到百万级 |
+| `src/core/budget-guard.js`      | 改   | `loadConfig` 读取 `unlimited` 字段（受 `CLAWKEEPER_BUDGET_FORCE=1` 反向覆盖）；`checkBudget` 在 unlimited 模式下短路返回 `{ block: false, status: 'unlimited' }`，`recordUsage` 仍正常累加用于观察 |
+| `test/permission-store.test.js` | 新建 | 10 条单元测试（指纹稳定性、bash 别名归一、空 store 返回 none、forever allow 命中、session deny 命中、forever 优先于 session、`resetSessionPermissions` 只清 session、grant 幂等、revoke 精确删除、状态文件路径） |
+| `test/budget-guard.test.js`     | 改   | 头部注入 `CLAWKEEPER_BUDGET_FORCE=1` 强制 unlimited 关闭；warn/over/dimension 三条用例的阈值同步抬到百万级，与新 limits 对齐 |
+
+测试结果：
+
+针对权限持久化构造了「基线被规则拦 / forever allow 覆盖规则 / forever deny 拦截良性命令 / session 自动隔离 / 多条目 list」五组端到端 case，全部通过 OpenClaw 真实 agent 触发。
+
+1. 基线（规则拦截）：清空两份 store 后，让 LLM 执行 `echo clawkeeper-permission-test`，被 `exec.permission-test` sentinel 规则同步拦截，工具未执行。
+
+   ```
+   [Clawkeeper] BLOCKED Clawkeeper blocked dangerous command (HIGH) [exec.permission-test]: Reserved sentinel for permission persistence testing. Command=echo clawkeeper-permission-test
+   [tools] exec failed: ... raw_params={"command":"echo clawkeeper-permission-test"}
+   ```
+
+2. forever allow 覆盖规则：CLI `permission allow --tool exec --command "echo clawkeeper-permission-test" --scope forever` 写入持久授权后，再次执行同一命令，零号闸门命中 allow 直接短路放行，跳过规则匹配，命令真实执行并返回 `clawkeeper-permission-test`。
+
+   ```
+   [Clawkeeper] PERMITTED exec via persistent allow (forever) fp=13aa6fa169a5c8e1b1d91f8d125872ec
+   ```
+
+3. forever deny 拦截良性命令：撤销上一步授权后写入 `permission deny --tool exec --command "ls /tmp" --scope forever`，再让 agent 执行 `ls /tmp`，被零号闸门按指纹精确命中 deny 同步阻断，bash 工具未执行；LLM 改用 find 等等价方式绕，但原始指令本身已被拦下。
+
+   ```
+   [Clawkeeper] BLOCKED Clawkeeper blocked tool call by persistent deny (forever) fp=ede5159e972a835866d2cfe6c16d8da5
+   [tools] exec failed: ... raw_params={"command":"ls /tmp"}
+   ```
+
+4. session 自动隔离：CLI `permission allow --scope session` 写入会话级授权后，立刻在另一条 CLI 跑 `permission list`——新进程启动时 sdk.js 中的 `resetSessionPermissions` 同步触发，session 文件被清空，list 输出 `📭 no permission entries`，证明 session scope 在跨进程边界自动失效。
+
+5. 多条目 list / revoke：分别写入 `allow echo a` 和 `deny echo b` 两条 forever 规则，list 输出两条独立条目，每条带 scope/decision/tool/fingerprint/sample；针对其中一条 revoke 精确移除，另一条保留。
+
+   ```
+   [forever] ALLOW tool=exec fp=96562bd647c3f826eea991b5c19563b7 sample="echo a"
+   [forever] DENY  tool=exec fp=7bb2d56b382d6ca0a95e232cd86af29e sample="echo b"
+   ```
+
+已知限制：
+
+由于 plugin 的 `before_tool_call` 是同步钩子且 plugin 子进程没有独立 TTY，无法在命中规则时实时弹出"是否记住此决策"的交互式选项，授权写入只能通过带外 CLI 完成；同时 OpenClaw 的 embedded（`agent --local`）模式下每条 CLI 都是独立 plugin 进程，session scope 在两条命令之间无法跨越。完整的"hook 内同步问用户 + 跨命令 session 共享"需要把判决层下沉到 watcher（v1.2 目标），届时通过 watcher 守护进程的 attach 通道与 bands 审批工具实现真正的交互式 + 跨 agent 共享授权。
 
 ### 功能三 输入校验升级
 

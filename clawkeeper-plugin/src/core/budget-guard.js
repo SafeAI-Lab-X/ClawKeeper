@@ -47,6 +47,7 @@ function loadConfig(rulesPath = DEFAULT_RULES_PATH) {
   }
   cachedConfig = {
     enabled: cfg.enabled !== false,
+    unlimited: cfg.unlimited === true && process.env.CLAWKEEPER_BUDGET_FORCE !== '1',
     windowDays: typeof cfg.windowDays === 'number' ? cfg.windowDays : 1,
     limits: {
       input: cfg.limits?.input ?? 1000000,
@@ -151,6 +152,7 @@ function classify(budget) {
 export function checkBudget(filePath) {
   const cfg = loadConfig();
   if (!cfg.enabled) return { block: false, status: 'disabled' };
+  if (cfg.unlimited) return { block: false, status: 'unlimited' };
   const budget = rollWindowIfNeeded(loadBudget(filePath));
   const c = classify(budget);
   return {

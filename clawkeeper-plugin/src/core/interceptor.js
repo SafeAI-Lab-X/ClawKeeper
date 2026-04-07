@@ -18,6 +18,7 @@ import { guardBeforeToolCall } from './path-guard.js';
 import { guardExecution } from './exec-gate.js';
 import { validateToolInput } from './input-validator.js';
 import { checkBudget, recordUsage, formatBudgetSummary } from './budget-guard.js';
+import { checkPermission } from './permission-store.js';
 
 let debugLogger = null;
 
@@ -143,10 +144,57 @@ export function createToolLoggerHook(logger = null) {
   
   return async (event, ctx) => {
     const { toolName, params, runId, toolCallId } = event;
+    let permResult = { decision: 'none' };
     let budgetResult = { block: false };
     let inputResult = { block: false };
     let pathResult = { block: false };
     let execResult = { block: false };
+
+    try {
+      permResult = checkPermission(toolName, params);
+    } catch (error) {
+      console.error('[Clawkeeper] permission-store check error:', error.message);
+      if (debugLogger) debugLogger.error('[Clawkeeper Logger] permission-store threw:', error.message);
+    }
+
+    // Persistent allow short-circuits all downstream gates.
+    if (permResult.decision === 'allow') {
+      try {
+        await logEvent('before_tool_call', {
+          toolName: toolName || 'unknown',
+          paramsCount: Object.keys(params || {}).length,
+          params: params || {},
+          runId: runId || null,
+          toolCallId: toolCallId || null,
+          agentId: ctx?.agentId || null,
+          sessionKey: ctx?.sessionKey || null,
+          sessionId: ctx?.sessionId || null,
+          permission: { decision: 'allow', scope: permResult.scope, fingerprint: permResult.fingerprint },
+        });
+      } catch {}
+      console.warn(`[Clawkeeper] PERMITTED ${toolName} via persistent allow (${permResult.scope}) fp=${permResult.fingerprint}`);
+      return {};
+    }
+
+    // Persistent deny is a hard block, regardless of any rule outcome.
+    if (permResult.decision === 'deny') {
+      const reason = `Clawkeeper blocked tool call by persistent deny (${permResult.scope}) fp=${permResult.fingerprint}`;
+      try {
+        await logEvent('blocked_tool_call', {
+          toolName: toolName || 'unknown',
+          paramsCount: Object.keys(params || {}).length,
+          params: params || {},
+          runId: runId || null,
+          toolCallId: toolCallId || null,
+          agentId: ctx?.agentId || null,
+          sessionKey: ctx?.sessionKey || null,
+          sessionId: ctx?.sessionId || null,
+          guard: { rule: 'permission-deny', scope: permResult.scope, fingerprint: permResult.fingerprint, reason },
+        });
+      } catch {}
+      console.warn(`[Clawkeeper] BLOCKED ${reason}`);
+      return { block: true, blockReason: reason };
+    }
 
     try {
       budgetResult = checkBudget();

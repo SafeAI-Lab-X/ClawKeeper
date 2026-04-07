@@ -1,3 +1,4 @@
+process.env.CLAWKEEPER_BUDGET_FORCE = '1';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -42,9 +43,9 @@ test('recordUsage accumulates and returns ok under limits', () => {
 test('recordUsage flips to warn at warnRatio', () => {
   resetBudgetCache();
   const f = tmpFile('warn');
-  // limits from core-rules: input=1000, output=500, total=1500; warnRatio=0.8
-  // input 800/1000=0.8 trips warn; output 300/500=0.6, total 1100/1500=0.73 stay ok
-  recordUsage({ input: 800, output: 300 }, f);
+  // core-rules limits: input=1000000, output=500000, total=1500000; warnRatio=0.8
+  // input 800000/1000000=0.8 trips warn
+  recordUsage({ input: 800000, output: 300000 }, f);
   const r = checkBudget(f);
   assert.equal(r.status, 'warn');
   fs.rmSync(f, { force: true });
@@ -53,7 +54,7 @@ test('recordUsage flips to warn at warnRatio', () => {
 test('recordUsage flips to over at the limit', () => {
   resetBudgetCache();
   const f = tmpFile('over');
-  recordUsage({ input: 1000, output: 500 }, f); // total=1500 = total cap
+  recordUsage({ input: 1000000, output: 500000 }, f); // total=1500000 = total cap
   const r = checkBudget(f);
   assert.equal(r.status, 'over');
   assert.equal(r.block, true);
@@ -63,8 +64,8 @@ test('recordUsage flips to over at the limit', () => {
 test('any single dimension over its cap trips over', () => {
   resetBudgetCache();
   const f = tmpFile('dim');
-  // input cap is 1000; push only input
-  recordUsage({ input: 1001, output: 0 }, f);
+  // input cap is 1000000; push only input
+  recordUsage({ input: 1000001, output: 0 }, f);
   const r = checkBudget(f);
   assert.equal(r.status, 'over');
   fs.rmSync(f, { force: true });

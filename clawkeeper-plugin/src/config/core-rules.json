@@ -151,12 +151,13 @@
   ],
   "budgetGuard": {
     "enabled": true,
+    "unlimited": true,
     "windowDays": 1,
     "warnRatio": 0.8,
     "limits": {
-      "input": 1000,
-      "output": 500,
-      "total": 1500
+      "input": 1000000,
+      "output": 500000,
+      "total": 1500000
     }
   },
   "inputValidator": {
@@ -209,6 +210,12 @@
         "severity": "HIGH",
         "pattern": "\\b(iptables|nft)\\b[^\\n]*\\s-F\\b",
         "reason": "Flushing firewall rules"
+      },
+      {
+        "id": "exec.permission-test",
+        "severity": "HIGH",
+        "pattern": "\\bclawkeeper-permission-test\\b",
+        "reason": "Reserved sentinel for permission persistence testing"
       },
       {
         "id": "exec.chmod-world",

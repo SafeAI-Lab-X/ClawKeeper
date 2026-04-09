@@ -1,0 +1,19 @@
+{
+  "tool": "write_file",
+  "aliases": ["write", "fs_write", "file_write"],
+  "type": "object",
+  "required": ["path", "content"],
+  "additionalProperties": true,
+  "properties": {
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^[^\\u0000\\n\\r]*$"
+    },
+    "content": {
+      "type": "string",
+      "maxLength": 1048576
+    }
+  }
+}

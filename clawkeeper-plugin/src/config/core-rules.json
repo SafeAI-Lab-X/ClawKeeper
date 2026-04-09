@@ -124,5 +124,106 @@
     "paste this into terminal",
     "grant full disk access",
     "turn off quarantine"
-  ]
+  ],
+  "protectedPaths": [
+    { "pattern": "~/.ssh/**",                   "severity": "CRITICAL", "reason": "SSH keys and config" },
+    { "pattern": "~/.gnupg/**",                 "severity": "CRITICAL", "reason": "GPG keys" },
+    { "pattern": "~/.aws/credentials",          "severity": "CRITICAL", "reason": "AWS credentials" },
+    { "pattern": "~/.aws/config",               "severity": "HIGH",     "reason": "AWS profile config" },
+    { "pattern": "~/.netrc",                    "severity": "CRITICAL", "reason": "Network auth tokens" },
+    { "pattern": "~/.docker/config.json",       "severity": "HIGH",     "reason": "Docker registry auth" },
+    { "pattern": "~/.kube/config",              "severity": "CRITICAL", "reason": "Kubernetes cluster credentials" },
+    { "pattern": "~/.config/gh/**",             "severity": "HIGH",     "reason": "GitHub CLI auth" },
+    { "pattern": "~/.config/gcloud/**",         "severity": "HIGH",     "reason": "Google Cloud credentials" },
+    { "pattern": "~/.gitconfig",                "severity": "HIGH",     "reason": "Git global identity" },
+    { "pattern": "~/.bashrc",                   "severity": "HIGH",     "reason": "Shell startup file" },
+    { "pattern": "~/.bash_profile",             "severity": "HIGH",     "reason": "Shell startup file" },
+    { "pattern": "~/.zshrc",                    "severity": "HIGH",     "reason": "Shell startup file" },
+    { "pattern": "~/.profile",                  "severity": "HIGH",     "reason": "Shell startup file" },
+    { "pattern": "~/.openclaw/openclaw.json",   "severity": "HIGH",     "reason": "OpenClaw core config" },
+    { "pattern": "~/.openclaw/AGENTS.md",       "severity": "HIGH",     "reason": "Agent runtime constitution" },
+    { "pattern": "~/.openclaw/SOUL.md",         "severity": "HIGH",     "reason": "Agent soul file" },
+    { "pattern": "/etc/shadow",                 "severity": "CRITICAL", "reason": "System password hashes" },
+    { "pattern": "/etc/sudoers",                "severity": "CRITICAL", "reason": "Sudo privilege config" },
+    { "pattern": "/etc/sudoers.d/**",           "severity": "CRITICAL", "reason": "Sudo privilege config" },
+    { "pattern": "/etc/passwd",                 "severity": "HIGH",     "reason": "System user database" },
+    { "pattern": "/etc/ssh/**",                 "severity": "CRITICAL", "reason": "System SSH config" },
+    { "pattern": "~/.openclaw/workspace/clawkeeper/.hmac-key", "severity": "CRITICAL", "reason": "Clawkeeper permission HMAC key" }
+  ],
+  "budgetGuard": {
+    "enabled": true,
+    "unlimited": true,
+    "windowDays": 1,
+    "warnRatio": 0.8,
+    "limits": {
+      "input": 1000000,
+      "output": 500000,
+      "total": 1500000
+    }
+  },
+  "inputValidator": {
+    "enabled": true,
+    "failurePolicy": "fail-open",
+    "unknownToolPolicy": "pass"
+  },
+  "pathGuard": {
+    "enabled": true,
+    "failurePolicy": "fail-closed",
+    "bashLikeTools": ["bash", "shell", "exec", "command", "run_command", "execute_command", "terminal"]
+  },
+  "executionGate": {
+    "enabled": true,
+    "failurePolicy": "fail-closed",
+    "bashLikeTools": ["bash", "shell", "exec", "command", "run_command", "execute_command", "terminal"],
+    "dangerousCommands": [
+      {
+        "id": "exec.rm-rf-root",
+        "severity": "CRITICAL",
+        "pattern": "\\brm\\s+(-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*|-[a-zA-Z]*f[a-zA-Z]*r[a-zA-Z]*)\\s+(/|~|\\$HOME|/\\*|~/\\*)(\\s|$)",
+        "reason": "Recursive force deletion targeting root or home"
+      },
+      {
+        "id": "exec.disk-wipe",
+        "severity": "CRITICAL",
+        "pattern": "\\b(mkfs(\\.[a-z0-9]+)?|dd\\s+[^\\n]*of=/dev/|format\\s+[a-zA-Z]:)",
+        "reason": "Disk wipe / low-level format"
+      },
+      {
+        "id": "exec.curl-pipe-shell",
+        "severity": "HIGH",
+        "pattern": "\\b(curl|wget)\\b[^\\n|]*\\|\\s*(bash|sh|zsh|python[0-9.]*)",
+        "reason": "Remote script piped directly into a shell interpreter"
+      },
+      {
+        "id": "exec.fork-bomb",
+        "severity": "CRITICAL",
+        "pattern": ":\\(\\)\\s*\\{\\s*:\\s*\\|\\s*:\\s*&\\s*\\}\\s*;\\s*:",
+        "reason": "Classic bash fork bomb"
+      },
+      {
+        "id": "exec.system-shutdown",
+        "severity": "HIGH",
+        "pattern": "\\b(shutdown|reboot|halt|poweroff|init\\s+0|init\\s+6)\\b",
+        "reason": "System power-state change"
+      },
+      {
+        "id": "exec.firewall-flush",
+        "severity": "HIGH",
+        "pattern": "\\b(iptables|nft)\\b[^\\n]*\\s-F\\b",
+        "reason": "Flushing firewall rules"
+      },
+      {
+        "id": "exec.permission-test",
+        "severity": "HIGH",
+        "pattern": "\\bclawkeeper-permission-test\\b",
+        "reason": "Reserved sentinel for permission persistence testing"
+      },
+      {
+        "id": "exec.chmod-world",
+        "severity": "HIGH",
+        "pattern": "\\bchmod\\s+(-R\\s+)?[0-7]?777\\b",
+        "reason": "Granting world-writable permissions"
+      }
+    ]
+  }
 }

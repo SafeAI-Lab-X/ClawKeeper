@@ -172,6 +172,7 @@ For **detailed** configuration, command reference, and feature documentation, se
 
 ---
 
+
 # 🔬 Comparative Analysis of  Safety Paradigms in ClawKeeper
 
 ClawKeeper offers a comprehensive suite of security mechanisms, allowing users to freely select and combine them according to their specific requirements, whether prioritizing runtime efficiency or security performance.
@@ -188,6 +189,15 @@ The results showed that ClawKeeper achieved optimal defense performance.
 ---
 
 # 🔥 Updates
+- [2026-04-07] 🛡️ ClawKeeper v1.1 — new guard pipeline & security hardening:
+  - **Execution Gate (`exec-gate`)**: Regex-based dangerous command detector that blocks destructive shell commands (e.g., `rm -rf /`, fork bombs, `curl | sh`, disk wipes) before agent execution.
+  - **Path Guard (`path-guard`)**: Protected path enforcement that prevents agents from reading, writing, or deleting sensitive files (e.g., `~/.ssh/**`, `~/.aws/credentials`, `/etc/shadow`).
+  - **Input Validator (`input-validator`)**: Lightweight JSON-Schema-subset validator that rejects malformed tool inputs (missing fields, wrong types, oversize strings, NUL bytes) at the interface boundary.
+  - **Budget Guard (`budget-guard`)**: Rolling-window token budget control that halts agent execution when configured input/output/total token limits are exceeded.
+  - **Permission Store (`permission-store`)**: Persistent allow/deny decisions keyed by (tool, fingerprint) with session and forever scopes, enabling operator-controlled authorization.
+  - **CLI interface (`cli.js`)**: New `openclaw clawkeeper permission` commands for managing allow/deny rules from the command line.
+  - **Tool schemas**: Added structured schemas for `bash`, `read_file`, and `write_file` tools.
+  - **Security hardening**: Fail-closed policy enforcement, scoped permission bypass (allow no longer skips budget-guard and input-validator), and HMAC-SHA256 integrity protection for permission store files.
 - [2026-03-25] 🎉 ClawKeeper v1.0 has been released.
 - [2026-03-26] 🧠 We released our [paper](https://arxiv.org/abs/2603.24414)
 

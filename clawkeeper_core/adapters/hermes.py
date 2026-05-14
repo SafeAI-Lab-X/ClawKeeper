@@ -20,23 +20,45 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from clawkeeper_core.judge import Judge
-from clawkeeper_core.schemas import (
-    AgentEvent,
-    JudgeContext,
-    Outcome,
-)
+from clawkeeper_core.schemas import AgentEvent
 
 if TYPE_CHECKING:
     # Lazy — Hermes need not be installed for this module to import.
-    from hermes_agent.run_agent import AIAgent  # noqa: F401
+    # Hermes Agent installs flat top-level modules (no `hermes_agent` namespace):
+    #   - run_agent.AIAgent
+    #   - tools.terminal_tool
+    #   - tools.computer_use.tool
+    from run_agent import AIAgent  # noqa: F401
 
 
-# Map ClawKeeper Decision -> Hermes approval-callback return string.
-_HERMES_RETURN_FOR_OUTCOME = {
-    Outcome.ALLOW: {"once": "once", "session": "session", "always": "always"},
-    Outcome.ASK: {"once": "deny", "session": "deny", "always": "deny"},  # ask resolved upstream
-    Outcome.DENY: {"once": "deny", "session": "deny", "always": "deny"},
+# Map the JS-style judgement (returned as a dict by judge_forwarded_context)
+# to the strings Hermes' set_approval_callback expects:
+#   "once" / "session" / "always" → execute and persist at that scope
+#   "deny"                        → refuse this command
+#
+# JS-style decisions:
+#   "continue"  → allow the command (default scope: "once")
+#   "stop"      → deny
+#   "ask_user"  → from an approval callback we can't ask anyone — deny
+_HERMES_RETURN_FOR_JS_DECISION: dict[str, str] = {
+    "continue": "once",
+    "stop": "deny",
+    "ask_user": "deny",
 }
+
+# Backwards-compat alias for the previous Outcome-enum-keyed shape. Kept
+# so consumers that imported the constant directly don't break; the live
+# code path uses _HERMES_RETURN_FOR_JS_DECISION above.
+_HERMES_RETURN_FOR_OUTCOME: dict = {}
+try:
+    from clawkeeper_core.schemas import Outcome, Scope
+    _HERMES_RETURN_FOR_OUTCOME = {
+        Outcome.ALLOW: {Scope.ONCE.value: "once", Scope.SESSION.value: "session", Scope.ALWAYS.value: "always"},
+        Outcome.ASK: {Scope.ONCE.value: "deny", Scope.SESSION.value: "deny", Scope.ALWAYS.value: "deny"},
+        Outcome.DENY: {Scope.ONCE.value: "deny", Scope.SESSION.value: "deny", Scope.ALWAYS.value: "deny"},
+    }
+except ImportError:
+    pass
 
 
 def install(judge: Judge, agent: "AIAgent") -> None:
@@ -45,20 +67,33 @@ def install(judge: Judge, agent: "AIAgent") -> None:
     Call this after `AIAgent(...)` but before `agent.run(...)`.
     """
     # Lazy import — fail loudly only if Hermes really isn't there.
-    from hermes_agent.tools import terminal_tool
-    from hermes_agent.tools.computer_use import tool as computer_use_tool
+    # Hermes 0.13 uses flat top-level modules: tools.terminal_tool and
+    # tools.computer_use.tool (no `hermes_agent` namespace).
+    import tools.terminal_tool as terminal_tool
+    from tools.computer_use import tool as computer_use_tool
 
     def approval_cb(command: str, description: str = "") -> str:
-        ctx = JudgeContext(
-            tool_name="bash",
-            tool_args={"command": command, "description": description},
-            messages=_recent_messages(agent),
-            agent_id=getattr(agent, "session_id", None),
-            session_id=getattr(agent, "session_id", None),
-            metadata={"source": "hermes.terminal_tool"},
-        )
-        decision = judge.evaluate(ctx)
-        return _HERMES_RETURN_FOR_OUTCOME[decision.outcome][decision.scope.value]
+        # judge_forwarded_context expects {mode, forwardedContext: {messages}}.
+        # Build a one-shot context that re-presents the dangerous command as
+        # if it had just been observed in a tool message.
+        recent = _recent_messages(agent)
+        forwarded_messages = [
+            *(recent if isinstance(recent, list) else []),
+            {"role": "tool", "toolName": "bash", "raw": command, "content": description},
+        ]
+        result = judge.evaluate({
+            "mode": "local",
+            "forwardedContext": {
+                "messages": forwarded_messages,
+                "metadata": {"sessionKey": getattr(agent, "session_id", None)},
+            },
+            "requestId": getattr(agent, "session_id", None),
+        })
+        # result is a dict from judge_forwarded_context. Map the JS-style
+        # decision string ("continue" | "stop" | "ask_user") to a Hermes-style
+        # return string ("once" | "session" | "always" | "deny").
+        js_decision = result.get("decision", "ask_user") if isinstance(result, dict) else "ask_user"
+        return _HERMES_RETURN_FOR_JS_DECISION.get(js_decision, "deny")
 
     terminal_tool.set_approval_callback(approval_cb)
     computer_use_tool.set_approval_callback(approval_cb)

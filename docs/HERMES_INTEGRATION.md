@@ -20,20 +20,59 @@ maps cleanly onto ClawKeeper's `Decision` shape.
 ```python
 from clawkeeper_core import Judge
 from clawkeeper_core.adapters.hermes import install as install_clawkeeper
-from hermes_agent.run_agent import AIAgent
+# Hermes Agent installs flat top-level modules (no `hermes_agent.` prefix):
+from run_agent import AIAgent
 
-judge = Judge.from_workspace("/path/to/workspace")    # in v0.2.1; for now: Judge()
+judge = Judge()    # default policy; Judge(policy={...}) to customize
 
 agent = AIAgent(
     model="anthropic/claude-opus-4-7",
     enabled_toolsets=["terminal", "files"],
-    # … usual Hermes config …
+    # … usual Hermes config (provider, API key env vars, etc.) …
 )
 
 install_clawkeeper(judge, agent)
 
 # Off you go.
 agent.run(user_prompt="Refactor the auth module.")
+```
+
+## Install footprint
+
+Hermes' `pyproject.toml` exact-pins its core deps (including
+`pydantic==2.12.5`), which conflicts with clawkeeper-core's looser
+`pydantic>=2.6`. Two ways to handle this:
+
+  - **Separate conda env (recommended)**: install hermes-agent into a
+    dedicated env, then `pip install -e .` clawkeeper-core into the
+    same env. Tested working with Python 3.11.
+  - **Single env**: accept whichever pydantic version Hermes installs.
+    clawkeeper-core works with 2.12.x and 2.13.x.
+
+## What `install(judge, agent)` does
+
+Three wires get connected on the agent:
+
+  - `tools.terminal_tool.set_approval_callback(approval_cb)` —
+    every dangerous bash/exec invocation goes through `approval_cb`,
+    which builds a `JudgeContext`, calls `judge.evaluate`, and
+    returns `"once" | "session" | "always" | "deny"`.
+  - `tools.computer_use.tool.set_approval_callback(approval_cb)` —
+    same callback wired into GUI/computer-use actions.
+  - `agent.tool_start_callback` / `agent.tool_complete_callback` —
+    observation hooks. The adapter wraps the existing callbacks
+    (chains to them after emitting a `tool_start` / `tool_complete`
+    `AgentEvent`). If `judge.profiler` is set, the events feed the
+    profiler; otherwise they're discarded.
+
+## Mapping from JS-style judgement to Hermes return strings
+
+```
+judge.evaluate -> dict["decision"]    Hermes return string
+─────────────────────────────────────────────────────────
+"continue"                            "once"   (allow)
+"stop"                                "deny"
+"ask_user"                            "deny"   (cannot ask from inside an approval callback)
 ```
 
 That's the entire user-facing API for the Hermes path. No fork. No

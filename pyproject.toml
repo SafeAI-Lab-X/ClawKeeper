@@ -1,0 +1,67 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "clawkeeper-core"
+version = "0.2.0.dev0"
+description = "Framework-agnostic safety core for LLM agents — judge, fingerprint, drift, profile, memory."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "SafeAI Lab" },
+]
+keywords = ["llm", "agent", "safety", "guardrails", "security"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+]
+
+dependencies = [
+    "pydantic>=2.6,<3.0",
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "httpx>=0.27",
+    "typing-extensions>=4.10",
+]
+
+[project.optional-dependencies]
+litellm = ["litellm>=1.50"]
+mcp = ["mcp>=1.0"]
+adversarial = ["smolagents>=1.0", "datasets>=2.18"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=4.1",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+
+[project.scripts]
+clawkeeper-server = "clawkeeper_core.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["clawkeeper_core"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "PL", "RUF"]
+ignore = ["E501", "PLR0913"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

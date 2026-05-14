@@ -7,21 +7,22 @@ and stop reason of a non-`continue` decision. When the same fingerprint appears
 repeatedly across sessions in the lookback window, it becomes a known risk
 pattern and `match_fingerprint` flags subsequent matches.
 
-Storage: reads JSONL files written by `clawkeeper_core.memory.DecisionMemory`
-in the decision-memory directory. Helpers for that dir + Beijing-time date
-stamp live here for now and will move to `clawkeeper_core.memory` once that
-module is ported.
+Storage: reads the JSONL files written by `clawkeeper_core.memory.DecisionMemory`.
+Date-stamp and directory helpers live there too — this module just imports them.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-import os
 import time
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
+
+from clawkeeper_core.memory import (
+    get_beijing_date_stamp as _get_beijing_date_stamp,
+    resolve_decision_memory_dir as _resolve_decision_memory_dir,
+)
 
 # ── Constants ───────────────────────────────────────────────────────────────
 
@@ -30,17 +31,6 @@ RISK_RANK: dict[str, int] = {"low": 1, "medium": 2, "high": 3, "critical": 4}
 _RANK_TO_LEVEL: list[str] = ["low", "low", "medium", "high", "critical"]
 
 _DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000  # 5 minutes
-_BEIJING = timezone(timedelta(hours=8))
-
-
-# ── Date helpers (to move to clawkeeper_core.memory when ported) ───────────
-
-
-def _get_beijing_date_stamp(ref: datetime | None = None) -> str:
-    """YYYY-MM-DD in Beijing time (UTC+8). Matches decision-memory.js convention."""
-    if ref is None:
-        ref = datetime.now(timezone.utc)
-    return ref.astimezone(_BEIJING).strftime("%Y-%m-%d")
 
 
 def _get_lookback_date_stamps(lookback_days: int, reference_date: datetime | None = None) -> list[str]:
@@ -51,18 +41,6 @@ def _get_lookback_date_stamps(lookback_days: int, reference_date: datetime | Non
         _get_beijing_date_stamp(reference_date - timedelta(days=i))
         for i in range(lookback_days)
     ]
-
-
-async def _resolve_decision_memory_dir() -> Path:
-    """Where the decision-memory JSONL files live.
-
-    Matches decision-memory.js: ~/.openclaw/.clawkeeper-watcher/decision-memory/.
-    Will move to clawkeeper_core.memory once that module is ported.
-    """
-    base = os.environ.get("CLAWKEEPER_DECISION_MEMORY_DIR")
-    if base:
-        return Path(base)
-    return Path.home() / ".openclaw" / ".clawkeeper-watcher" / "decision-memory"
 
 
 # ── Fingerprint key ────────────────────────────────────────────────────────

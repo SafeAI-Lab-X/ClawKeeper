@@ -1,0 +1,42 @@
+{
+  "id": "clawkeeper-shim",
+  "name": "ClawKeeper Shim",
+  "description": "Thin OpenClaw plugin that forwards every tool-call decision to the clawkeeper-core Python server (POST /v1/judge).",
+  "version": "0.2.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "serverUrl": {
+        "type": "string",
+        "description": "URL of the running clawkeeper-core HTTP server.",
+        "default": "http://127.0.0.1:7474"
+      },
+      "mode": {
+        "type": "string",
+        "enum": ["local", "remote"],
+        "default": "local"
+      },
+      "failurePolicy": {
+        "type": "string",
+        "enum": ["fail-open", "fail-closed"],
+        "default": "fail-closed",
+        "description": "What to do if the server is unreachable. fail-closed blocks the tool call; fail-open lets it through."
+      },
+      "timeoutMs": {
+        "type": "number",
+        "default": 2000
+      }
+    }
+  },
+  "uiHints": {
+    "serverUrl": {
+      "label": "ClawKeeper Server URL",
+      "help": "Where the Python core listens. Default 127.0.0.1:7474."
+    },
+    "failurePolicy": {
+      "label": "Failure Policy",
+      "help": "fail-closed is safer; fail-open avoids breaking when the server is down."
+    }
+  }
+}

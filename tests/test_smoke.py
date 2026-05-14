@@ -1,29 +1,16 @@
-"""Smoke tests — exercise the v0.2 scaffold end-to-end before any real porting."""
+"""Package-level sanity checks. Real behavior coverage lives in
+test_drift.py, test_risk.py, test_judge.py, and others.
+"""
 
-from clawkeeper_core import Decision, Judge, JudgeContext
-from clawkeeper_core.schemas import Outcome
+from __future__ import annotations
 
-
-def test_imports_resolve():
-    judge = Judge()
-    ctx = JudgeContext(tool_name="bash", tool_args={"command": "ls /"})
-    decision = judge.evaluate(ctx)
-    assert isinstance(decision, Decision)
-    assert decision.outcome in {Outcome.ALLOW, Outcome.ASK, Outcome.DENY}
+import clawkeeper_core
 
 
-def test_decision_serializes_roundtrip():
-    judge = Judge()
-    ctx = JudgeContext(tool_name="bash", tool_args={"command": "ls"})
-    d = judge.evaluate(ctx)
-    blob = d.model_dump_json()
-    d2 = Decision.model_validate_json(blob)
-    assert d == d2
+def test_package_imports():
+    assert clawkeeper_core.__version__.startswith("0.2")
 
 
-def test_judge_context_rejects_unknown_field():
-    import pytest
-    from pydantic import ValidationError
-
-    with pytest.raises(ValidationError):
-        JudgeContext.model_validate({"tool_name": "x", "not_a_field": 1})
+def test_top_level_reexports_present():
+    from clawkeeper_core import Decision, Judge, JudgeContext, Policy
+    assert all(callable(t) or hasattr(t, "model_fields") for t in (Decision, Judge, JudgeContext, Policy))

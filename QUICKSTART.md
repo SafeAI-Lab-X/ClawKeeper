@@ -1,221 +1,336 @@
-# ClawKeeper Quickstart
+# ClawKeeper v0.2 — Quickstart for Hermes Agent
 
-A framework-agnostic safety layer for LLM agents. Drop it in front of
-Hermes Agent, Claude Code (via MCP), an OpenClaw plugin host, or anything
-you build — same policy, no rewriting per framework.
+This guide gets ClawKeeper running in front of a Hermes Agent install from scratch.
 
-## Install
+If you already have a working Hermes setup, skip to step 3.
+
+---
+
+## Prerequisites
+
+| | Required | Notes |
+|---|---|---|
+| Python | 3.11+ | Hermes itself requires 3.11; ClawKeeper inherits |
+| A Hermes Agent checkout | Yes | We integrate as an in-process plugin, so Hermes needs to be importable. Clone from `git@github.com:NousResearch/hermes-agent.git` |
+| An OpenAI-compatible LLM endpoint | Yes | OpenAI / Anthropic / OpenRouter / scode.chat / any local server that exposes `/v1/chat/completions` |
+| Network access from the box running Hermes | To your LLM endpoint | If your box is firewalled off from your provider, set up a proxy first (clash / WireGuard / corp HTTP proxy) — ClawKeeper does not add network requirements of its own beyond what Hermes already needs |
+
+ClawKeeper does NOT need:
+- Docker, Kubernetes, or any orchestrator (it's a Python library + an optional FastAPI daemon)
+- A separate database — session state is in-memory by default
+- A separate LLM API key beyond what Hermes already uses (the optional Watcher can reuse Hermes's key or take its own)
+
+---
+
+## Step 1 — Install Hermes Agent
+
+If you don't already have it:
 
 ```bash
-# Python 3.11+
-pip install -e .                       # local install from the repo
-pip install -e ".[mcp]"                # add the MCP gateway adapter
-pip install -e ".[adversarial]"        # add the Phase-5 adversarial layer
-pip install -e ".[dev]"                # pytest, ruff, mypy
+git clone git@github.com:NousResearch/hermes-agent.git
+cd hermes-agent
+./setup-hermes.sh         # creates a .venv, installs deps, links the `hermes` CLI
 ```
 
-## Three integration paths
+Or with a venv you manage yourself:
 
-### 1. Hermes Agent (Python, fastest path)
+```bash
+git clone git@github.com:NousResearch/hermes-agent.git
+cd hermes-agent
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+```
+
+Verify:
+
+```bash
+python -c "from run_agent import AIAgent; print('Hermes OK')"
+```
+
+## Step 2 — Configure Hermes
+
+Two files matter:
+
+### `~/.hermes/config.yaml` — model + terminal backend
+
+Minimum viable example for an OpenAI-compatible provider:
+
+```yaml
+model:
+  default: "gpt-5.4-openai-compact"     # any model id your provider exposes
+  provider: "custom"                     # for OpenAI-compatible endpoints
+  base_url: "https://api.openai.com/v1"  # change to your endpoint
+
+terminal:
+  backend: "local"                       # or "docker" for containerised execution
+  cwd: "/path/to/your/workdir"           # the directory Hermes runs tools in
+  timeout: 180
+
+session_reset:
+  mode: idle
+  idle_minutes: 1440
+
+group_sessions_per_user: true
+```
+
+### `~/.hermes/.env` — secrets (mode 0600)
+
+```bash
+OPENAI_API_KEY="sk-…"
+OPENAI_BASE_URL="https://api.openai.com/v1"
+
+# If you'll run the Hermes messaging gateway against Discord/Telegram/etc.:
+# DISCORD_BOT_TOKEN="..."
+# DISCORD_ALLOWED_USERS="numeric_user_id_1,numeric_user_id_2"
+```
+
+`chmod 600 ~/.hermes/.env` after creating it.
+
+Smoke test Hermes alone (no ClawKeeper yet):
+
+```bash
+hermes chat -m gpt-5.4-openai-compact
+# type "list the files here" — should work
+```
+
+## Step 3 — Install ClawKeeper
+
+In the same Python environment Hermes is installed in:
+
+```bash
+git clone git@github.com:SafeAI-Lab-X/ClawKeeper.git
+cd ClawKeeper
+git checkout v0.2-refactor               # currently the active branch
+pip install -e .                         # core
+pip install -e ".[mcp]"                  # optional: MCP gateway adapter
+pip install -e ".[dev]"                  # optional: pytest, ruff, mypy
+```
+
+Verify the install:
+
+```bash
+python -c "
+from clawkeeper_core import Judge
+from clawkeeper_core.adapters.hermes import install
+print('ClawKeeper OK')
+"
+pytest -q --ignore=tests/redteam tests/   # should report 250+ passing
+```
+
+## Step 4 — Wire ClawKeeper into Hermes (deterministic mode)
+
+This is the minimum integration. No daemon, no extra LLM calls. Catches a strong set of attacks via deterministic guards (path access, dangerous-command regex, SSRF, homoglyph URLs, script-body sensitive-path detection, credential redaction).
 
 ```python
+# my_agent.py — your own entrypoint or wrap-script
 from run_agent import AIAgent
 from clawkeeper_core import Judge
 from clawkeeper_core.adapters.hermes import install as install_clawkeeper
 
-judge = Judge()                                  # default policy
-
 agent = AIAgent(
-    base_url="https://api.scode.chat/v1",        # or api.openai.com/v1
-    api_key="...",
-    model="claude-haiku-4-5-20251001",
-    enabled_toolsets=["terminal"],               # see notes below
+    model="gpt-5.4-openai-compact",
+    base_url="https://api.openai.com/v1",
+    enabled_toolsets=["terminal"],       # see note below
+    max_iterations=30,
 )
 
-install_clawkeeper(judge, agent)                 # one call wires everything
+install_clawkeeper(Judge(), agent)       # one call wires every documented hook
 
-response = agent.chat("Set up a backup script in /tmp/backups.")
+response = agent.chat("List the files in this directory.")
+print(response)
 ```
 
-**What `install` does** (no Hermes patches required):
+What `install_clawkeeper(...)` actually does:
 
-- Registers `path_guard` + `exec_gate` as a **pre-check** in front of
-  Hermes' own `check_all_command_guards`. ClawKeeper sees every terminal
-  command before Hermes' built-in detector decides. First-to-block wins.
-- Wires `set_approval_callback` on `tools.terminal_tool` and
-  `tools.computer_use.tool` so when Hermes does ask for approval,
-  ClawKeeper's `Judge` answers.
-- Wraps `tool_start_callback` / `tool_complete_callback` so every tool
-  call is observable, regardless of who decided about it. The data
-  feeds `clawkeeper_core.profile.AgentProfiler` if `judge.profiler`
-  is set.
+1. Registers a `pre_tool_call` plugin hook with Hermes — Hermes's **documented** blocking API. The hook runs ClawKeeper's deterministic guard chain on every tool call; if any guard blocks, Hermes returns a block message to the LLM and the tool never executes.
+2. Wires `set_approval_callback` on `tools.terminal_tool` and `tools.computer_use.tool` — when Hermes's own regex flags a command and asks for approval, ClawKeeper's `Judge` answers.
+3. Attaches `tool_start_callback` / `tool_complete_callback` for telemetry (drift detection, profiling).
 
-**Provider notes (Anthropic-via-third-party endpoints):**
+The Hermes CLI (`hermes chat`, `hermes gateway`) doesn't expose a plugin-mount point directly — wrap it the way `examples/hermes_demo.py` does (UA patch + `install_clawkeeper(...)` + delegate to `hermes_cli.main.main()`). See `examples/hermes_discord_bot.py` for a complete gateway-mode launcher.
 
-- The `openai` Python SDK sends `User-Agent: OpenAI/Python ...`, which
-  many Claude-relaying proxies (api.scode.chat, …) reject as 403. The
-  demo runner monkey-patches the SDK to send a generic browser UA. If
-  you hit 403s, do the same. See `examples/hermes_demo.py` for the
-  16-line patch.
-- Hermes loads ~40 toolsets by default; some have JSON schemas that
-  fail strict Anthropic-side validation (Anthropic enforces JSON Schema
-  draft 2020-12). Use `enabled_toolsets=["terminal"]` to narrow to the
-  ones we want to govern, or use a GPT-class model where Anthropic
-  validation doesn't apply.
+## Step 5 (optional) — Enable the LLM-driven Watcher
 
-### 2. Claude Code / Cursor / Cline (via MCP gateway)
+The Watcher is the third architectural layer: an external LLM-driven supervisor that reasons about whole trajectories rather than individual commands. Pay 1 extra LLM call (~2–5 s) per tool call; gain trajectory-level drift detection.
 
-```python
-from clawkeeper_core import Judge
-from clawkeeper_core.adapters.mcp import GatewayServer
-
-server = GatewayServer(name="clawkeeper-gw", judge=Judge())
-
-@server.guarded_tool(description="Run a shell command")
-async def bash(command: str) -> str:
-    import subprocess
-    return subprocess.check_output(command, shell=True, text=True)
-
-server.run()      # stdio transport, ready for Claude Code's MCP config
-```
-
-Then in your Claude Code (or Cursor / Cline / Goose / Hermes' own MCP
-client) configuration, point at this server. Every `tools/call` goes
-through `Judge` first; if it returns `stop` or `ask_user`, the client
-sees a `McpError` and never executes the tool.
-
-### 3. OpenClaw (legacy, via HTTP shim)
-
-Run the Python core as an HTTP server:
+Start the daemon in a separate shell (or under systemd / a process supervisor):
 
 ```bash
-clawkeeper-server                                # listens on 127.0.0.1:7474
+# Environment knobs (all optional — defaults shown)
+export CK_WATCHER_HOST="127.0.0.1"        # bind address (do NOT bind 0.0.0.0)
+export CK_WATCHER_PORT="9099"
+export CK_WATCHER_MODEL="gpt-5.4-openai-compact"  # what the Watcher reasons with
+export CK_WATCHER_BASE_URL="$OPENAI_BASE_URL"     # falls back to OPENAI_BASE_URL
+export CK_WATCHER_API_KEY="$OPENAI_API_KEY"       # falls back to OPENAI_API_KEY
+
+python -m clawkeeper_core.watcher.daemon
 ```
 
-Then enable the slim JS shim in your OpenClaw config:
-
-```json
-{
-  "plugins": {
-    "clawkeeper-shim": {
-      "serverUrl": "http://127.0.0.1:7474",
-      "failurePolicy": "fail-closed"
-    }
-  }
-}
-```
-
-The shim has zero decision logic — it just forwards `before_tool_call`
-events as `POST /v1/judge`. All rules live in Python.
-
-## What policy is
-
-`Judge()` with no arguments uses a sensible default:
-
-- Max 3 tool calls without a user turn before asking
-- `exec`, `bash`, `shell`, `network`, `write` always require user confirmation
-- Risk threshold: stop at `critical`
-- `treatCommandExecutionAsHighRisk: true`
-
-Customize:
-
-```python
-judge = Judge(policy={
-    "maxToolStepsWithoutUserTurn": 5,
-    "autoContinueAllowed": False,
-    "requireUserConfirmationFor": ["exec", "bash", "shell", "network", "write"],
-})
-```
-
-For richer detection (regex patterns, protected paths, sensitive verbs),
-the rules live in:
-
-- `clawkeeper_core.security_rules` — 60 prompt-injection patterns, 49
-  dangerous-command patterns, 96 high-risk tool names
-- `clawkeeper_core.drift.SENSITIVE_TOPIC_PATTERNS` — SSH keys,
-  cloud creds, persistence locations, etc.
-- `clawkeeper_core.guards.path_guard` — protected-path glob list
-
-You can add to these directly, or wait for the Phase-5 adversarial loop
-to surface new patterns from real attack data.
-
-## What's in the box
-
-```
-clawkeeper_core/
-├── judge.py           — central decision engine (context-judge.js port)
-├── risk.py            — cross-session risk fingerprinting
-├── drift.py           — intent vs. tool-chain drift
-├── profile.py         — agent behavioral baseline + anomaly
-├── memory.py          — append-only decision log (JSONL)
-├── controls.py        — 5 built-in hardening checks
-├── audit.py           — audit driver + scoring
-├── maintenance.py     — harden + rollback (snapshots state files)
-├── scanner.py         — log + skill scanners
-├── security_rules.py  — pattern catalogue
-├── permission.py      — HMAC-signed allow/deny store
-├── guards/
-│   ├── exec_gate.py      — dangerous-command pre-block
-│   ├── path_guard.py     — protected paths (~/.ssh, /etc/shadow, ~/.aws, …)
-│   ├── input_validator.py — JSON-schema-subset validator
-│   └── budget.py         — token-budget tracker
-├── server.py          — FastAPI HTTP surface (POST /v1/judge, etc.)
-└── adapters/
-    ├── hermes.py      — Hermes Agent
-    ├── mcp.py         — MCP gateway (Claude Code, Cursor, …)
-    └── openclaw_http  — see adapters_js/openclaw/
-```
-
-## Running the demo
+Health check:
 
 ```bash
-# Set up the env (one-time)
-conda create -n clawkeeper-demo python=3.11 -y
-conda activate clawkeeper-demo
-pip install -e .[dev]
-pip install hermes-agent psutil                  # if testing Hermes path
-
-# Provide an API key for whatever LLM you want to use
-export OPENAI_API_KEY="..."
-export OPENAI_BASE_URL="https://api.scode.chat/v1"   # if using a third-party endpoint
-export HERMES_INTERACTIVE=1                          # so Hermes invokes the approval callback
-
-# Run the scenario suite
-python examples/hermes_demo.py --model claude-haiku-4-5-20251001
-
-# Output:
-#   examples/runs/<timestamp>/raw.json   — full structured trace
-#   examples/runs/<timestamp>/report.md  — human-readable summary
+curl http://127.0.0.1:9099/watcher/health
+# {"status":"ok","model_id":"gpt-5.4-openai-compact","known_sessions":0}
 ```
 
-Each scenario captures: prompt, tool calls attempted, ClawKeeper
-decisions, elapsed time, memory delta, final assistant response, and a
-verdict tag classifying whether the model refused at LLM level, Hermes'
-pipeline blocked, ClawKeeper's pre-check blocked, or everyone agreed
-the call was fine.
+Wire it into the adapter:
 
-## Where ClawKeeper actually adds value
+```python
+install_clawkeeper(
+    Judge(),
+    agent,
+    watcher_url="http://127.0.0.1:9099",
+)
+```
 
-Based on the included scenario suite running against Claude haiku +
-Hermes Agent:
+The Watcher is consulted only when the deterministic guards didn't already block. If the Watcher is unreachable, the client falls back to `ask` (defer to operator) — never silently allows.
 
-| Defense layer | Catches |
+## Step 6 — Verify end-to-end
+
+`examples/hermes_demo.py` is a self-contained runner that exercises a few benign + adversarial scenarios against a live agent. Run it from the ClawKeeper repo root:
+
+```bash
+source /path/to/hermes/.env             # provides OPENAI_API_KEY / OPENAI_BASE_URL
+cd ClawKeeper
+python examples/hermes_demo.py
+```
+
+The script writes a JSON trace + a markdown summary into `examples/runs/<timestamp>/`. ClawKeeper decisions show up under `_clawkeeper_decisions` on each tool call.
+
+For a more aggressive validation, use the red-team suite:
+
+```bash
+# Need a workspace for the agent to operate in:
+mkdir -p tests/redteam/workspaces
+git clone --depth 1 git@github.com:miguelgrinberg/microblog.git \
+  tests/redteam/workspaces/flask-todo
+
+# Run a scenario
+export REDTEAM_USE_WATCHER=1                            # optional
+export REDTEAM_WATCHER_URL="http://127.0.0.1:9099"      # only if using Watcher
+python -m tests.redteam.runner --only 07.a
+```
+
+Reports go to `tests/redteam/results/<timestamp>/`.
+
+---
+
+## Configuration reference
+
+### Hermes `~/.hermes/config.yaml`
+
+| Key | What it does | Recommended for ClawKeeper |
+|---|---|---|
+| `model.default` | Which LLM the agent uses | Any. The agent's own LLM is one defense layer; smaller models = ClawKeeper does more work. |
+| `model.provider` | `"custom"` for OpenAI-compatible | `"custom"` for scode.chat / OpenRouter / local servers |
+| `terminal.backend` | `local` / `docker` / `ssh` / `modal` | Choose based on isolation needs. ClawKeeper's policy applies regardless of backend. |
+| `approvals.mode` | `manual` / `smart` / `off` | **Use `manual`.** `smart` delegates safety to an aux LLM (jailbreakable); `off` disables Hermes's regex layer entirely. |
+| `command_allowlist` | Hermes's permanent-allow list | Keep small. ClawKeeper still applies its own guards independently. |
+
+### Hermes `~/.hermes/.env`
+
+```
+# LLM endpoint
+OPENAI_API_KEY=...
+OPENAI_BASE_URL=...
+
+# Gateway (only if running the messaging gateway)
+DISCORD_BOT_TOKEN=...
+DISCORD_ALLOWED_USERS=numeric_id_1,numeric_id_2     # NUMERIC IDs not handles
+DISCORD_REQUIRE_MENTION=false                       # DMs only
+# TELEGRAM_BOT_TOKEN, SLACK_BOT_TOKEN, etc. follow the same pattern
+```
+
+### ClawKeeper environment variables
+
+| Var | Default | Purpose |
+|---|---|---|
+| `CK_WATCHER_HOST` | `127.0.0.1` | Bind address — **do not expose externally** |
+| `CK_WATCHER_PORT` | `9099` | |
+| `CK_WATCHER_MODEL` | `gpt-5.4-openai-compact` | LLM the Watcher uses (can differ from the agent's) |
+| `CK_WATCHER_BASE_URL` | `$OPENAI_BASE_URL` | |
+| `CK_WATCHER_API_KEY` | `$OPENAI_API_KEY` | |
+| `CK_WATCHER_URL` | `http://127.0.0.1:9099` | Read by `WatcherClient` if you don't pass `watcher_url` explicitly |
+
+---
+
+## Common deployments
+
+| Use case | Setup |
 |---|---|
-| Claude (LLM-level refusal) | Direct exfiltration prompts (`cat ~/.ssh/id_rsa`), explicit jailbreaks, embedded prompt injection in retrieved files |
-| Hermes' built-in `check_all_command_guards` | Direct `rm -rf /`, `~/.bashrc` modifications, recognized SSH-key-write patterns |
-| **ClawKeeper's `path_guard` pre-check** | **Slow-drift toward `~/.aws/credentials` when wrapped in `\|\| echo` (Hermes' regex misses this); SSH key directory setup before write happens; any path-based exfiltration Hermes doesn't recognize** |
-| **ClawKeeper's `exec_gate` pre-check** | Dangerous commands Hermes considers benign + things in the long tail Hermes' patterns don't cover |
+| CLI agent ("talk to Hermes locally with safety on") | Step 4 only. Run your wrapper that calls `install_clawkeeper(...)`. |
+| CLI + trajectory reasoning | Step 4 + Step 5. Start daemon, pass `watcher_url`. |
+| Discord / Telegram / Slack bot | See `examples/hermes_discord_bot.py`. The launcher applies the User-Agent patch (needed for some proxies like scode.chat), installs ClawKeeper, and delegates to `hermes_cli.main`. |
+| Protecting an MCP client (Claude Desktop, Cursor, Continue, Zed) | Use the MCP gateway adapter at `clawkeeper_core.adapters.mcp.GatewayServer` (independent path, doesn't need Hermes). See `docs/integration-surfaces.md` §3.7. |
 
-The story isn't "ClawKeeper alone protects you from a dangerous LLM."
-The story is "ClawKeeper is the framework-agnostic policy layer that
-runs in front of whatever the host agent already does, adds coverage
-where the host has gaps, and applies the same rules across Hermes,
-Claude Code, OpenClaw, and anything else that comes next."
+---
 
-## Tests
+## Provider compatibility notes
 
-```bash
-pytest -q                          # 171 Python tests
-pytest tests/test_hermes_adapter.py -q  # 9 Hermes tests (needs hermes-agent installed)
-cd adapters_js/openclaw && node test/round_trip.test.mjs  # 6 JS shim tests
+**User-Agent rejection (api.scode.chat and some other Anthropic relays).** The `openai` Python SDK sends `User-Agent: OpenAI/Python X.Y.Z`, which some proxies 403-reject. Patch it at startup:
+
+```python
+import openai as _openai
+_orig = _openai.OpenAI.__init__
+def _patched(self, *a, **kw):
+    h = dict(kw.get("default_headers") or {})
+    h.setdefault("User-Agent", "Mozilla/5.0")
+    kw["default_headers"] = h
+    return _orig(self, *a, **kw)
+_openai.OpenAI.__init__ = _patched
 ```
+
+Apply before constructing any `AIAgent` or `Watcher`. The Watcher daemon does this itself at import time.
+
+**JSON-schema validation on Anthropic endpoints.** Hermes ships ~40 toolsets; some tool schemas don't fully satisfy JSON Schema draft 2020-12, which Anthropic enforces strictly. If you see 400 errors mentioning schema validation, restrict to a subset:
+
+```python
+agent = AIAgent(
+    enabled_toolsets=["terminal"],
+    # ...
+)
+```
+
+GPT-class models don't enforce this, so the issue is provider-specific.
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `install_clawkeeper` runs cleanly but blocked-looking commands still execute | You wired into `tool_start_callback` only. Hermes silently swallows callback exceptions. | Use the latest `clawkeeper_core/adapters/hermes.py` from `v0.2-refactor` — it registers the documented `pre_tool_call` plugin hook (the real blocking API). |
+| `pre_tool_call hooks: 0` when you `_ensure_plugins_discovered()._hooks` | You called `install_clawkeeper` BEFORE constructing the AIAgent. | Construct the agent first, then install. |
+| `HTTP 403` from your provider | Default OpenAI-SDK User-Agent rejected. | Apply the UA patch above. |
+| `HTTP 400 JSON schema validation` from Anthropic-side endpoint | Hermes toolsets have schemas Anthropic rejects. | Use `enabled_toolsets=["terminal"]`. |
+| Watcher daemon returns `decision: "ask"` for everything | LLM output unparseable (model returning prose instead of JSON). | Check daemon logs; try a stronger Watcher model via `CK_WATCHER_MODEL`. |
+| Watcher latency ~5–10 s per tool call | This is expected for a single LLM round trip. | Use a faster Watcher model (`gpt-5.4-openai-compact` or Haiku); or skip the Watcher for high-throughput cases (Step 4 alone). |
+| `127.0.0.1:9099 connection refused` when adapter consults Watcher | Daemon isn't running. | `python -m clawkeeper_core.watcher.daemon`. Or omit `watcher_url=` to fall back to deterministic-only mode. |
+
+---
+
+## What ClawKeeper does and doesn't change about Hermes
+
+| | |
+|---|---|
+| Hermes's hardline blocklist (`rm -rf /`, fork bombs) | **Unchanged.** Runs first, always. |
+| Hermes's dangerous-command regex | **Unchanged.** Still gates the approval prompt. ClawKeeper's `Judge` answers when Hermes asks. |
+| Hermes's context-file scan (AGENTS.md, .cursorrules, SOUL.md) | **Unchanged.** ClawKeeper adds `return_content_scan` for anything else entering context. |
+| Hermes's Tirith pre-exec scan | **Unchanged.** ClawKeeper's `url_safety` adds homoglyph + SSRF coverage. |
+| Hermes's MCP env filter | **Unchanged.** |
+| Hermes's gateway authorization (allowlists, DM pairing) | **Unchanged.** |
+| Hermes's container backend hardening | **Unchanged.** Out of scope for ClawKeeper (deployment concern). |
+
+ClawKeeper runs **in addition to** Hermes's built-in safety, not instead of it. Both pipelines fire; strictest wins.
+
+---
+
+## Where to go next
+
+| | |
+|---|---|
+| Understand which threats ClawKeeper handles | `tests/redteam/THREAT_MODEL.md` |
+| Wire CK into something other than Hermes (Claude Code, MCP client, LangGraph, …) | `docs/integration-surfaces.md` |
+| Read every guard's source | `clawkeeper_core/guards/` |
+| Read the Watcher's prompt + decision shape | `clawkeeper_core/watcher/prompts.py` |
+| File a bug or request a new guard | `github.com/SafeAI-Lab-X/ClawKeeper/issues` |

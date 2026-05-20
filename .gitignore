@@ -8,3 +8,14 @@ __pycache__/
 .ruff_cache/
 build/
 dist/
+examples/runs/
+
+# Internal audit-trail docs (not shipped)
+docs/internal/
+
+# Local scratch notes
+clawkeeper.md
+
+# Red-team runtime artifacts (regenerated per run)
+tests/redteam/results/
+tests/redteam/workspaces/

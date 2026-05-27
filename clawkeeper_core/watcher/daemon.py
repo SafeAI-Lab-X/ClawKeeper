@@ -18,6 +18,8 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from clawkeeper_core.watcher.agent import Watcher, WatcherDecision
+from clawkeeper_core.watcher.learner import STORE
+from clawkeeper_core.watcher.reload import apply_learned_patterns
 
 
 class EvaluateRequest(BaseModel):
@@ -46,6 +48,7 @@ class IntentRequest(BaseModel):
 
 def build_app(watcher: Watcher | None = None) -> FastAPI:
     app = FastAPI(title="ClawKeeper Watcher", version="0.2.0")
+    apply_learned_patterns()  # load persisted patterns from previous runs
     app.state.watcher = watcher or Watcher()
 
     @app.get("/watcher/health")
@@ -98,6 +101,16 @@ def build_app(watcher: Watcher | None = None) -> FastAPI:
                 for sid, calls in getattr(w.history, "_calls", {}).items()
             ]
         }
+
+
+    @app.get("/watcher/learned")
+    def list_learned():
+        return [c.__dict__ for c in STORE.all()]
+
+    @app.delete("/watcher/learned/{pattern_hash}")
+    def remove_learned(pattern_hash: str):
+        removed = STORE.remove(pattern_hash)
+        return {"removed": removed}
 
     return app
 

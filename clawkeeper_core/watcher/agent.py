@@ -48,6 +48,9 @@ from clawkeeper_core.watcher.tools import (
     gather_deterministic_findings,
 )
 
+from clawkeeper_core.watcher.learner import STORE, synthesize_pattern, maybe_push_upstream
+from clawkeeper_core.watcher.reload import apply_learned_patterns
+
 
 @dataclass
 class WatcherDecision:
@@ -99,6 +102,15 @@ def _make_default_model():
         api_base=os.environ.get("CK_WATCHER_BASE_URL", os.environ.get("OPENAI_BASE_URL", "https://api.scode.chat/v1")),
         api_key=os.environ.get("CK_WATCHER_API_KEY", os.environ.get("OPENAI_API_KEY", "")),
     )
+
+
+
+def _maybe_learn(tool_name: str, args: dict | None, final: dict, model) -> None:
+    command = str((args or {}).get("command", str(args or "")[:500]))
+    candidate = synthesize_pattern(command, final.get("reason", ""), model)
+    if candidate and STORE.add(candidate):
+        apply_learned_patterns()
+        maybe_push_upstream(candidate)
 
 
 # ── Main Watcher class ─────────────────────────────────────────────────────
@@ -185,6 +197,12 @@ class Watcher:
             watcher_proposal=proposal,
             deterministic_findings=det,
         )
+
+        # Self-improvement: guards missed it but Watcher caught it → synthesize pattern
+        if (final["decision"] in ("deny", "ask")
+                and not det
+                and float(final.get("confidence") or 0) >= 0.75):
+            _maybe_learn(tool_name, args, final, self.model)
 
         # 5) Remember this call AFTER deciding (so the next call sees it as recent)
         self.history.remember_call(session_id, tool_name, args)

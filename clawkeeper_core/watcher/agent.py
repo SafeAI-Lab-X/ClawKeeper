@@ -95,13 +95,29 @@ def _extract_first_json(text: str) -> dict | None:
 
 
 def _make_default_model():
-    """Construct an OpenAIServerModel from env."""
-    from smolagents import OpenAIServerModel
-    return OpenAIServerModel(
-        model_id=os.environ.get("CK_WATCHER_MODEL", "gpt-5.5"),
-        api_base=os.environ.get("CK_WATCHER_BASE_URL", os.environ.get("OPENAI_BASE_URL", "https://api.scode.chat/v1")),
+    """Direct OpenAI client wrapper — bypasses smolagents string-return bug."""
+    import openai as _oai
+    client = _oai.OpenAI(
         api_key=os.environ.get("CK_WATCHER_API_KEY", os.environ.get("OPENAI_API_KEY", "")),
+        base_url=os.environ.get("CK_WATCHER_BASE_URL", os.environ.get("OPENAI_BASE_URL", "https://api.scode.chat/v1")),
+        default_headers={"User-Agent": _BROWSER_UA},
     )
+    model_id = os.environ.get("CK_WATCHER_MODEL", "gpt-5.4-openai-compact")
+
+    class _DirectModel:
+        def __init__(self, c, m):
+            self._client = c
+            self.model_id = m
+        def __call__(self, messages, **kw):
+            resp = self._client.chat.completions.create(
+                model=self.model_id, messages=messages,
+                max_tokens=512, temperature=0.2,
+            )
+            class _R:
+                content = resp.choices[0].message.content
+            return _R()
+
+    return _DirectModel(client, model_id)
 
 
 
@@ -111,6 +127,15 @@ def _maybe_learn(tool_name: str, args: dict | None, final: dict, model) -> None:
     if candidate and STORE.add(candidate):
         apply_learned_patterns()
         maybe_push_upstream(candidate)
+        # broadcast to dashboard
+        try:
+            from clawkeeper_core.watcher.daemon import _broadcast
+            import time as _t
+            _broadcast({"type": "learned", "ts": int(_t.time()),
+                        "pattern": candidate.pattern, "guard_target": candidate.guard_target,
+                        "confidence": candidate.confidence})
+        except Exception:
+            pass
 
 
 # ── Main Watcher class ─────────────────────────────────────────────────────

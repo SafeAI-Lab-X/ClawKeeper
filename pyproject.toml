@@ -28,6 +28,7 @@ dependencies = [
     "fastapi>=0.110",
     "uvicorn>=0.27",
     "httpx>=0.27",
+    "openai>=1.0",
     "typing-extensions>=4.10",
 ]
 

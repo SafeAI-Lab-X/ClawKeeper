@@ -36,6 +36,15 @@ class MiniMaxModelDefinition:
     thinking: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class MiniMaxEndpointDefinition:
+    """Regional API and documentation endpoints for MiniMax."""
+
+    openai_base_url: str
+    anthropic_base_url: str
+    docs_root: str
+
+
 MINIMAX_MODELS: Mapping[str, MiniMaxModelDefinition] = MappingProxyType(
     {
         "MiniMax-M3": MiniMaxModelDefinition(
@@ -65,10 +74,18 @@ MINIMAX_MODELS: Mapping[str, MiniMaxModelDefinition] = MappingProxyType(
     }
 )
 
-MINIMAX_ENDPOINTS: Mapping[MiniMaxRegion, str] = MappingProxyType(
+MINIMAX_ENDPOINTS: Mapping[MiniMaxRegion, MiniMaxEndpointDefinition] = MappingProxyType(
     {
-        "global_en": "https://api.minimax.io/v1",
-        "cn_zh": "https://api.minimaxi.com/v1",
+        "global_en": MiniMaxEndpointDefinition(
+            openai_base_url="https://api.minimax.io/v1",
+            anthropic_base_url="https://api.minimax.io/anthropic",
+            docs_root="https://platform.minimax.io/docs",
+        ),
+        "cn_zh": MiniMaxEndpointDefinition(
+            openai_base_url="https://api.minimaxi.com/v1",
+            anthropic_base_url="https://api.minimaxi.com/anthropic",
+            docs_root="https://platform.minimaxi.com/docs",
+        ),
     }
 )
 
@@ -98,7 +115,7 @@ class MiniMaxProviderConfig:
 
     @property
     def resolved_base_url(self) -> str:
-        return self.base_url or MINIMAX_ENDPOINTS[self.region]
+        return self.base_url or MINIMAX_ENDPOINTS[self.region].openai_base_url
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str]) -> MiniMaxProviderConfig:

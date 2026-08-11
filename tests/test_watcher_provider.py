@@ -8,11 +8,27 @@ from clawkeeper_core.watcher import agent
 from clawkeeper_core.watcher.providers import (
     MINIMAX_ENDPOINTS,
     MINIMAX_MODELS,
+    MiniMaxEndpointDefinition,
     MiniMaxModelDefinition,
     MiniMaxProviderConfig,
     MiniMaxTokenPricing,
     resolve_minimax_provider_config,
 )
+
+
+def test_minimax_endpoint_catalog_matches_declared_regions():
+    assert MINIMAX_ENDPOINTS == {
+        "global_en": MiniMaxEndpointDefinition(
+            openai_base_url="https://api.minimax.io/v1",
+            anthropic_base_url="https://api.minimax.io/anthropic",
+            docs_root="https://platform.minimax.io/docs",
+        ),
+        "cn_zh": MiniMaxEndpointDefinition(
+            openai_base_url="https://api.minimaxi.com/v1",
+            anthropic_base_url="https://api.minimaxi.com/anthropic",
+            docs_root="https://platform.minimaxi.com/docs",
+        ),
+    }
 
 
 def test_minimax_model_catalog_matches_declared_capabilities():
@@ -53,7 +69,7 @@ def test_minimax_provider_defaults_to_global_endpoint():
 
     assert config is not None
     assert config == MiniMaxProviderConfig(api_key="provider-key")
-    assert config.resolved_base_url == MINIMAX_ENDPOINTS["global_en"]
+    assert config.resolved_base_url == MINIMAX_ENDPOINTS["global_en"].openai_base_url
 
 
 def test_minimax_provider_selects_cn_endpoint_and_model():
@@ -73,7 +89,7 @@ def test_minimax_provider_selects_cn_endpoint_and_model():
         region="cn_zh",
         model_id="MiniMax-M2.7",
     )
-    assert config.resolved_base_url == MINIMAX_ENDPOINTS["cn_zh"]
+    assert config.resolved_base_url == MINIMAX_ENDPOINTS["cn_zh"].openai_base_url
 
 
 @pytest.mark.parametrize(
@@ -112,7 +128,7 @@ def test_watcher_uses_explicit_minimax_provider_config(monkeypatch):
 
     assert watcher.model.model_id == "MiniMax-M2.7"
     assert captured["api_key"] == "provider-key"
-    assert captured["base_url"] == MINIMAX_ENDPOINTS["cn_zh"]
+    assert captured["base_url"] == MINIMAX_ENDPOINTS["cn_zh"].openai_base_url
 
 
 def test_watcher_resolves_minimax_provider_from_environment(monkeypatch):
@@ -134,4 +150,4 @@ def test_watcher_resolves_minimax_provider_from_environment(monkeypatch):
 
     assert watcher.model.model_id == "MiniMax-M3"
     assert captured["api_key"] == "provider-key"
-    assert captured["base_url"] == MINIMAX_ENDPOINTS["global_en"]
+    assert captured["base_url"] == MINIMAX_ENDPOINTS["global_en"].openai_base_url

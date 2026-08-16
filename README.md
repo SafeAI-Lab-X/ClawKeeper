@@ -1,208 +1,131 @@
-# 🦞🛡️ ClawKeeper: Comprehensive Safety Protection for OpenClaw Agents Through Skills, Plugins, and Watchers 
+# ClawKeeper
 
-<h1 align="center"><i>(aka The Norton for OpenClaw)</i></h1>
+Host-agnostic safety middleware for tool-using LLM agents.
 
-<p align="center">
-    <img src="./fig/logo.png" alt="OpenClaw" width="700">
-</p>
+ClawKeeper sits between an agent and its tools. It can block risky tool calls, redact sensitive tool results, remember recurring attack patterns, and delegate harder trajectory-level decisions to an external Watcher.
 
-<p align="center">
-  <strong>SAFETY EXFOLIATE! SAFETY EXFOLIATE!</strong>
-</p>
+It is not OpenClaw-specific anymore. The core is Python, the integration surface is adapter-based, and the same policy/guard layer can be wired into Hermes Agent, MCP tools, HTTP bridges, OpenClaw-style runtimes, or a custom host.
 
-<p align="center">
-  <a href="https://github.com/openclaw/openclaw">
-    <img src="https://img.shields.io/badge/OpenClaw-Compatible-blue.svg" alt="OpenClaw">
-  </a>
-  <a href="https://opensource.org/licenses/MIT">
-    <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT">
-  </a>
-</p>
+## What it is for
 
-**ClawKeeper** is a _comprehensive real-time security framework_ designed for autonomous agent systems such as **OpenClaw**. It provides unified protection through three complementary approaches: **skill-based** safeguards at the instruction level, **plugin-based** enforcement at the runtime level, and a **watcher-based** independent monitoring agent for external oversight.
+- Guarding shell, Python, browser, filesystem, and network tool calls before execution.
+- Catching common agent-security failures: prompt injection, credential reads, credential exfiltration chains, unsafe shell execution, protected-path access, SSRF-like URLs, encoded second-stage payloads, and poisoned tool output.
+- Running a host-independent Judge API for non-Python adapters.
+- Running an optional Watcher daemon that reasons over intent, recent tool history, deterministic findings, and proposed tool calls.
+- Self-improving guard coverage: Watcher catches can synthesize learned patterns, persist them under `~/.clawkeeper/`, and hot-reload them into the live guard layer.
 
-# 🔎 Overview
+## Shape
 
-**ClawKeeper** provides protection mechanisms across three complementary architectural layers:
-
-- **Skill-based Protection** operates at the instruction level, injecting structured security policies directly into the agent context to enforce environment-specific constraints and cross-platform boundaries. 
-
-- **Plugin-based Protection** serves as an internal runtime enforcer, providing configuration hardening, proactive threat detection, and continuous behavioral monitoring throughout the execution pipeline. 
-
-- **Watcher-based Protection** introduces a novel, decoupled system-level security middleware that continuously verifies agent state evolution. It enables real-time execution intervention without coupling to the agent's internal logic, supporting operations such as halting high-risk actions or enforcing human confirmation. 
-
-Importantly, **Watcher-based Protection** is **system-agnostic** and can be integrated with different agent platforms to provide regulatory separation between task execution and safety enforcement, enabling **proactive** and **adaptive** security across the entire agent lifecycle. It can be deployed both **locally** and in the **cloud**, supporting personal deployments as well as enterprise or intranet environments.
-
-![](fig/overview.png)
-
-![](fig/item_list.png)
-
-# 📦 Installation
-
-ClawKeeper supports three complementary protection mechanisms.
-
-## 📚 I. [Skill-based Protection](clawkeeper-skill/README.md)
-
-Inject security policies directly into the agent context through structured Markdown documents and scripts.
-
-**Quick Start:**
-
-### Windows Safety Guide
-```powershell
-cd clawkeeper-skill/skills/windows-safety-guide
-./scripts/install.ps1
+```text
+agent host  ->  adapter  ->  ClawKeeper core  ->  tool / tool result
+                 |              |
+                 |              deterministic guards + Judge
+                 |
+                 optional Watcher daemon for trajectory-level policy
 ```
 
-Then instruct OpenClaw:
-```
-Please use the windows-safety-guide skill to enforce behavior security policies, configuration protection, and enable nightly security audits.
-```
+Current adapters include:
 
-### Feishu (Lark) Safety Guide
+- `clawkeeper_core.adapters.hermes` for Hermes Agent.
+- `clawkeeper_core.adapters.mcp` for MCP-style tool gateways.
+- `clawkeeper-server` for HTTP/JSON bridges used by non-Python hosts.
+- Legacy OpenClaw integration code under `legacy/` and `adapters_js/`.
+
+## Install
+
 ```bash
-cd clawkeeper-skill/skills/feishu-safety-guide
-bash scripts/install.sh
+git clone git@github.com:SafeAI-Lab-X/ClawKeeper.git
+cd ClawKeeper
+
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
 ```
 
-Then instruct OpenClaw:
-```
-Please use the feishu-safety-guide skill to enforce message protection, credential security, and enable periodic security reporting in Feishu (Lark).
-```
+Sanity check:
 
-For **detailed** setup options and deployment from prompt, see [Skill-based Protection](clawkeeper-skill/README.md).
-
----
-
-## 📚 II. [Plugin-based Protection](clawkeeper-plugin/README.md)
-
-A runtime enforcer plugin providing configuration auditing, threat detection, and behavioral monitoring.
-
-**Quick Start:**
-
-### Linux/macOS
 ```bash
-cd clawkeeper-plugin
-bash install.sh
+pytest -q
 ```
 
-### Windows
-```powershell
-cd clawkeeper-plugin
-./install.ps1
+## Use with Hermes Agent
+
+```python
+from run_agent import AIAgent
+
+from clawkeeper_core import Judge
+from clawkeeper_core.adapters.hermes import install as install_clawkeeper
+
+agent = AIAgent(...)
+install_clawkeeper(Judge(), agent)
+
+agent.run("your task")
 ```
 
-Then verify installation:
+This installs the default pre-tool guard chain and post-tool-result scanners. No Hermes patching is required.
+
+## Run the HTTP core
+
+For hosts that cannot import the Python package directly:
+
 ```bash
-npx openclaw clawkeeper audit
+clawkeeper-server
+curl http://127.0.0.1:7474/v1/health
 ```
 
-For **detailed** command reference and advanced usage, see [Plugin-based Protection](clawkeeper-plugin/README.md).
+Useful endpoints include `/v1/judge`, `/v1/event`, `/v1/audit`, `/v1/scan/logs`, `/v1/scan/skill`, and maintenance harden/rollback routes.
 
----
+## Run the Watcher
 
-## 📚 III. [Watcher-based Protection](clawkeeper-watcher/README.md)
+The Watcher is optional. It is useful when single-command rules are not enough and the decision depends on intent, recent tool history, or multi-step drift.
 
-An independent, decoupled governance layer providing runtime monitoring and execution control without coupling to the agent's internal logic.
+```bash
+export CK_WATCHER_API_KEY="$OPENAI_API_KEY"
+export CK_WATCHER_BASE_URL="$OPENAI_BASE_URL"   # optional, OpenAI-compatible
+export CK_WATCHER_MODEL="gpt-5.5"               # or your configured model
 
-**Quick Start:**
+python -m clawkeeper_core.watcher.daemon
+curl http://127.0.0.1:9099/watcher/health
+```
 
-### Prerequisites
-- Node.js and npm/pnpm installed
-- Git repository cloned
+Wire it into Hermes:
 
-### Installation Steps
+```python
+install_clawkeeper(
+    Judge(),
+    agent,
+    watcher_url="http://127.0.0.1:9099",
+)
+```
 
-1. **Install repository dependencies:**
-   ```bash
-   pnpm install
-   ```
+## Core guards
 
-2. **Build and link the launcher:**
-   ```bash
-   cd clawkeeper
-   npm install
-   npm run build
-   npm link
-   cd ..
-   ```
+The default guard set currently covers:
 
-3. **Initialize operating modes:**
-   ```bash
-   clawkeeper init remote
-   clawkeeper init local
-   ```
+- dangerous shell execution
+- protected path access
+- unsafe URL / SSRF patterns
+- script-body and dynamic-path inspection
+- base64/hex encoded payloads
+- credential discovery plus network exfiltration chains
+- poisoned return content
+- credential redaction
 
-4. **Launch the watcher:**
-   ```bash
-   # Remote governance mode
-   clawkeeper remote gateway run
-   
-   # Local governance mode
-   clawkeeper local gateway run
-   ```
+The exact policies are intentionally small and inspectable; see `clawkeeper_core/guards/`.
 
-For **detailed** configuration, command reference, and feature documentation, see [Watcher-based Protection](clawkeeper-watcher/README.md).
+## Development
 
----
+```bash
+pip install -e ".[dev]"
+pytest -q
+```
 
+Red-team fixtures and benchmark scripts live under `tests/redteam/` and `experiments/`.
 
-# 💡 Features
+## Status
 
-![](fig/framework.png)
+ClawKeeper v0.2 is an alpha research prototype. The strongest current surface is deterministic guard-layer enforcement plus host adapters. Watcher policy and self-evolving patterns are active research components and should be evaluated before production use.
 
-- **Comprehensive Security Scanning:** Regularly scans the runtime environment, dependencies, and workspace for vulnerabilities, providing clear and actionable risk alerts before threats occur.
+## License
 
-- **Real-time Threat Prevention & Gating:** Evaluates AI actions in real time, blocking high-risk behaviors such as prompt injection, credential leakage, and code injection.
-
-- **Behavioral Profiling & Anomaly Detection:** Builds long-term behavioral baselines for AI agents and detects anomalies when unusual actions, risky tool calls, or dangerous commands appear.
-
-- **Intent Enforcement & Trajectory Analysis:** Monitors multi-turn interactions to ensure AI actions stay aligned with the user’s original intent and prevents goal drift, unsafe loops, or unauthorized actions.
-
-- **Config Integrity & Drift Monitoring:** Protects critical configuration files and alerts users when unexpected changes weaken security settings or introduce new risks.
-
-- **Automated Hardening & Remediation:** Provides vulnerability remediation suggestions, applies secure default configurations, and supports one-click rollback with automatic backups.
-
-- **Third-Party Extension Shield:** Reviews and monitors external extensions and plugins to prevent malicious behavior or excessive permission access.
-
-- **Comprehensive Logging & Auditing:** Maintains full logs of user inputs, AI outputs, tool usage, and security decisions for auditing, compliance, and traceability.
-
-- **Self-Evolving Threat Intelligence:** Stores high-risk events and decisions to build a threat intelligence library that helps detect and prevent recurring or new attack patterns.
-
-- **Cross-Platform Ecosystem Security:** Ensures consistent security protection across operating systems and third-party platforms, providing full ecosystem coverage.
-
----
-
-
-# 🔬 Comparative Analysis of  Safety Paradigms in ClawKeeper
-
-ClawKeeper offers a comprehensive suite of security mechanisms, allowing users to freely select and combine them according to their specific requirements, whether prioritizing runtime efficiency or security performance.
-
-![](fig/compare.png)
-
-# 📈 Experiment Results
-
-To systematically assess the security capabilities of ClawKeeper, we construct a benchmark comprising seven categories of safety tasks, each containing 20 adversarial instances divided equally into 10 simple and 10 complex examples. We compare ClawKeeper against the most prominent open-source security repositories for OpenClaw-style agent ecosystems.
-The results showed that ClawKeeper achieved optimal defense performance.
-
-![](fig/results.png)
-
----
-
-# 🔥 Updates
-- [2026-04-07] 🛡️ ClawKeeper v1.1 — new guard pipeline & security hardening:
-  - **Execution Gate (`exec-gate`)**: Regex-based dangerous command detector that blocks destructive shell commands (e.g., `rm -rf /`, fork bombs, `curl | sh`, disk wipes) before agent execution.
-  - **Path Guard (`path-guard`)**: Protected path enforcement that prevents agents from reading, writing, or deleting sensitive files (e.g., `~/.ssh/**`, `~/.aws/credentials`, `/etc/shadow`).
-  - **Input Validator (`input-validator`)**: Lightweight JSON-Schema-subset validator that rejects malformed tool inputs (missing fields, wrong types, oversize strings, NUL bytes) at the interface boundary.
-  - **Budget Guard (`budget-guard`)**: Rolling-window token budget control that halts agent execution when configured input/output/total token limits are exceeded.
-  - **Permission Store (`permission-store`)**: Persistent allow/deny decisions keyed by (tool, fingerprint) with session and forever scopes, enabling operator-controlled authorization.
-  - **CLI interface (`cli.js`)**: New `openclaw clawkeeper permission` commands for managing allow/deny rules from the command line.
-  - **Tool schemas**: Added structured schemas for `bash`, `read_file`, and `write_file` tools.
-  - **Security hardening**: Fail-closed policy enforcement, scoped permission bypass (allow no longer skips budget-guard and input-validator), and HMAC-SHA256 integrity protection for permission store files.
-- [2026-03-25] 🎉 ClawKeeper v1.0 has been released.
-- [2026-03-26] 🧠 We released our [paper](https://arxiv.org/abs/2603.24414)
-
----
-
-# 📝 License
-
-This project is licensed under [MIT](https://opensource.org/licenses/MIT).
+Apache-2.0.

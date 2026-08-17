@@ -21,9 +21,15 @@ The daemon binds to `127.0.0.1:9099` by default. All env knobs:
 |---|---|---|
 | `CK_WATCHER_HOST` | `127.0.0.1` | Bind address — DO NOT bind to `0.0.0.0` unless you intend a network-exposed Watcher (and even then, fronted by a real auth proxy) |
 | `CK_WATCHER_PORT` | `9099` | |
+| `CK_WATCHER_PROVIDER` | unset | Set to `MiniMax` to use the built-in MiniMax provider configuration |
+| `CK_WATCHER_REGION` | `global_en` | MiniMax endpoint region: `global_en` or `cn_zh` |
 | `CK_WATCHER_MODEL` | `gpt-5.5` | LLM the Watcher reasons with |
 | `CK_WATCHER_BASE_URL` | `$OPENAI_BASE_URL` or `https://api.scode.chat/v1` | OpenAI-compatible endpoint |
 | `CK_WATCHER_API_KEY` | `$OPENAI_API_KEY` | |
+| `MINIMAX_API_KEY` | unset | MiniMax API key used when `CK_WATCHER_PROVIDER=MiniMax` |
+
+MiniMax defaults to `MiniMax-M3`. Set `CK_WATCHER_MODEL=MiniMax-M2.7` to select the
+other declared model. `CK_WATCHER_BASE_URL` remains available as an explicit endpoint override.
 
 Health check:
 

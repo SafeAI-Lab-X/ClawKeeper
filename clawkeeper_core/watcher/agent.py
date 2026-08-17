@@ -49,6 +49,10 @@ from clawkeeper_core.watcher.tools import (
 )
 
 from clawkeeper_core.watcher.learner import STORE, synthesize_pattern, maybe_push_upstream
+from clawkeeper_core.watcher.providers import (  # noqa: E402
+    MiniMaxProviderConfig,
+    resolve_minimax_provider_config,
+)
 from clawkeeper_core.watcher.reload import apply_learned_patterns
 
 
@@ -94,8 +98,40 @@ def _extract_first_json(text: str) -> dict | None:
     return None
 
 
-def _make_default_model():
+class _DirectModel:
+    def __init__(self, client, model_id):
+        self._client = client
+        self.model_id = model_id
+
+    def __call__(self, messages, **kw):
+        resp = self._client.chat.completions.create(
+            model=self.model_id,
+            messages=messages,
+            max_tokens=512,
+            temperature=0.2,
+        )
+
+        class _R:
+            content = resp.choices[0].message.content
+
+        return _R()
+
+
+def _make_minimax_model(provider_config: MiniMaxProviderConfig):
+    client = _openai_pkg.OpenAI(
+        api_key=provider_config.api_key,
+        base_url=provider_config.resolved_base_url,
+        default_headers={"User-Agent": _BROWSER_UA},
+    )
+    return _DirectModel(client, provider_config.model_id)
+
+
+def _make_default_model(provider_config: MiniMaxProviderConfig | None = None):
     """Direct OpenAI client wrapper — bypasses smolagents string-return bug."""
+    resolved_provider = provider_config or resolve_minimax_provider_config(os.environ)
+    if resolved_provider is not None:
+        return _make_minimax_model(resolved_provider)
+
     import openai as _oai
     client = _oai.OpenAI(
         api_key=os.environ.get("CK_WATCHER_API_KEY", os.environ.get("OPENAI_API_KEY", "")),
@@ -103,20 +139,6 @@ def _make_default_model():
         default_headers={"User-Agent": _BROWSER_UA},
     )
     model_id = os.environ.get("CK_WATCHER_MODEL", "gpt-5.4-openai-compact")
-
-    class _DirectModel:
-        def __init__(self, c, m):
-            self._client = c
-            self.model_id = m
-        def __call__(self, messages, **kw):
-            resp = self._client.chat.completions.create(
-                model=self.model_id, messages=messages,
-                max_tokens=512, temperature=0.2,
-            )
-            class _R:
-                content = resp.choices[0].message.content
-            return _R()
-
     return _DirectModel(client, model_id)
 
 
@@ -144,8 +166,15 @@ def _maybe_learn(tool_name: str, args: dict | None, final: dict, model) -> None:
 class Watcher:
     """LLM-driven safety supervisor. One instance per daemon."""
 
-    def __init__(self, *, model=None, history=None, fail_safe: str = "ask"):
-        self.model = model if model is not None else _make_default_model()
+    def __init__(
+        self,
+        *,
+        model=None,
+        history=None,
+        fail_safe: str = "ask",
+        provider_config: MiniMaxProviderConfig | None = None,
+    ):
+        self.model = model if model is not None else _make_default_model(provider_config)
         self.history = history if history is not None else HISTORY
         # When the LLM call fails / output is unparseable, we fall back to
         # this decision. "ask" is the most conservative useful default —

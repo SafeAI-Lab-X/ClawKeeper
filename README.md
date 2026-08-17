@@ -1,10 +1,9 @@
 # ClawKeeper
 
-Host-agnostic safety middleware for tool-using LLM agents.
+Host-agnostic safety middleware for tool-using agentic systems (can be wired into Hermes Agent, MCP tools, HTTP bridges, OpenClaw-style runtimes, or a custom host).
 
-ClawKeeper sits between an agent and its tools. It can block risky tool calls, redact sensitive tool results, remember recurring attack patterns, and delegate harder trajectory-level decisions to an external Watcher.
+ClawKeeper sits between an agent and its tools. It can block risky tool calls, redact sensitive tool results, remember recurring attack patterns & self improve guardrail layers, and delegate harder trajectory-level decisions to an external Watcher.
 
-It is not OpenClaw-specific anymore. The core is Python, the integration surface is adapter-based, and the same policy/guard layer can be wired into Hermes Agent, MCP tools, HTTP bridges, OpenClaw-style runtimes, or a custom host.
 
 ## What it is for
 
@@ -14,22 +13,6 @@ It is not OpenClaw-specific anymore. The core is Python, the integration surface
 - Running an optional Watcher daemon that reasons over intent, recent tool history, deterministic findings, and proposed tool calls.
 - Self-improving guard coverage: Watcher catches can synthesize learned patterns, persist them under `~/.clawkeeper/`, and hot-reload them into the live guard layer.
 
-## Shape
-
-```text
-agent host  ->  adapter  ->  ClawKeeper core  ->  tool / tool result
-                 |              |
-                 |              deterministic guards + Judge
-                 |
-                 optional Watcher daemon for trajectory-level policy
-```
-
-Current adapters include:
-
-- `clawkeeper_core.adapters.hermes` for Hermes Agent.
-- `clawkeeper_core.adapters.mcp` for MCP-style tool gateways.
-- `clawkeeper-server` for HTTP/JSON bridges used by non-Python hosts.
-- Legacy OpenClaw integration code under `legacy/` and `adapters_js/`.
 
 ## Install
 
@@ -122,9 +105,6 @@ pytest -q
 
 Red-team fixtures and benchmark scripts live under `tests/redteam/` and `experiments/`.
 
-## Status
-
-ClawKeeper v0.2 is an alpha research prototype. The strongest current surface is deterministic guard-layer enforcement plus host adapters. Watcher policy and self-evolving patterns are active research components and should be evaluated before production use.
 
 ## License
 

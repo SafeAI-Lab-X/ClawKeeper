@@ -98,17 +98,27 @@ OpenClaw was TypeScript-first; ClawKeeper v0.1 was deeply embedded as plugins. v
 
 ### 3.4 Codex (OpenAI Codex CLI)
 
-Status: **needs investigation**; treat as MCP-host for now.
+Status: **experimental shell hook verified on Codex CLI 0.162.1**.
 
-Codex CLI (the 2026 incarnation of OpenAI's terminal agent) supports MCP servers and has a hook-like notion. Specifics shift between releases, and at time of writing CK doesn't have an adapter.
+Codex now has documented blocking `PreToolUse` hooks. ClawKeeper's minimal
+prototype in `examples/codex_pre_tool_use.py` reuses the existing pre-tool
+guards for native shell calls. `examples/codex_hook_smoke.py` verifies the real
+CLI against a local Responses fixture without changing active configuration
+or calling an external model. A full Codex adapter is still pending.
 
 | Integration point | Type | What it gives us |
 |---|---|---|
 | MCP servers (in `~/.codex/config.toml`) | External subprocess | First-class blocking for tools-we-own. Same shape as Claude Code MCP. |
-| `~/.codex/hooks/*.sh` (if/when stable) | Shell-command hooks | Reportedly similar to Claude Code's PreToolUse but the contract is less mature; do not depend on it for hard safety. |
+| `hooks.json` or inline `[hooks]` in active config layers | Command hooks | `PreToolUse` can block shell, patch, MCP, and other supported local tool calls. Non-managed hooks require trust review. CK's current prototype matches `Bash` only. |
 | Codex ACP support (`codex_responses_adapter.py` in Hermes) | Stdio JSON-RPC | If Codex exposes ACP server-style, CK can sit in the stdio path. Speculative. |
 
-**Recommended adapter shape:** MCP-gateway only until Codex stabilizes a documented hook API.
+**Current deployment:** test the shell-only hook in a separate session and
+review it with `/hooks` before enabling it. The prototype does not scan
+results, chat messages, or non-shell calls. Hosted tools bypass local tool
+hooks; `write_stdin` does not rerun `PreToolUse` when feeding an existing
+process. Keep Codex's native sandbox and approval policies enabled. See the
+[official hook contract](https://learn.chatgpt.com/docs/hooks) and the README
+for setup and testing.
 
 ### 3.5 LangGraph (LangChain)
 
@@ -217,7 +227,7 @@ Plus, **MCP servers as the second moat**: every MCP server Hermes is configured 
 | **Claude Code** | A small native binary that Claude Code spawns as a `PreToolUse` hook; the binary talks to a long-running CK daemon over Unix socket. Plus MCP server for MCP-routed tools. | **A** (every tool call gated) | not started | `clawkeeper_core/adapters/claude_code/` (pending) |
 | **OpenClaw v0.1** | HTTP shim — OpenClaw plugin calls into Python ClawKeeper. | **B+** (limited by plugin API granularity) | maintained | `adapters_js/openclaw/` |
 | **LangGraph** | `ToolNode` wrapper installed at graph-construction time + `interrupt_before` for ask_user outcomes. | **A** (every wrapped tool gated; un-wrapped tools invisible) | not started | `clawkeeper_core/adapters/langgraph/` (pending) |
-| **Codex CLI** | MCP gateway only until Codex stabilizes a hook API. | **B** (only MCP-routed tools gated) | not started | `clawkeeper_core/adapters/codex/` (pending) |
+| **Codex CLI** | `PreToolUse` command hook for native shell calls; MCP gateway for wrapped MCP tools. | Partial (prototype gates shell calls only) | experimental prototype | `examples/codex_pre_tool_use.py` |
 | **AutoGPT family** | Observation-only Watcher — filesystem + network proxy + post-hoc audit. **Don't promise blocking.** | **D** (observation only) | not started | `clawkeeper_core/adapters/watcher/` (pending) |
 | **Generic OpenAI-API-compatible** | LLM-stream proxy: sit between the agent and the model provider, scrub credentials & PI in the response stream before they reach the agent. | **C** (observation + content rewrite; cannot block tool execution because we don't see the dispatcher) | not started | `clawkeeper_core/adapters/llm_proxy/` (pending) |
 
@@ -231,7 +241,7 @@ Plus, **MCP servers as the second moat**: every MCP server Hermes is configured 
 | MCP gateway | ✅ all gateway tools | ✅ rewrite return | n/a (no LLM) | 🛑 client-side | n/a | n/a |
 | Claude Code | ✅ `PreToolUse` hook | ✅ `PostToolUse` hook (rewrite via stdout) | ✅ `UserPromptSubmit` | 🛑 not exposed | n/a (one-user-CLI) | 🛑 |
 | OpenClaw v0.1 | ✅ TS plugin | ✅ TS plugin | 🟡 partial | ✅ skill scanner exists | n/a | ✅ behavioral scan ports |
-| Codex CLI | 🟡 MCP only | 🟡 MCP only | 🛑 | 🛑 | n/a | 🛑 |
+| Codex CLI | 🟡 shell hook prototype; MCP gateway | 🛑 not implemented in prototype | 🛑 | 🛑 | n/a | 🛑 |
 | LangGraph | ✅ ToolNode wrap | 🟡 ToolNode wrap (rewrite needs custom) | 🛑 not directly | 🛑 | n/a | 🟡 checkpointer |
 | AutoGPT family | 🛑 | 🛑 | 🛑 | 🛑 | 🛑 | 🛑 |
 | LLM-stream proxy | 🛑 | 🛑 | ✅ | n/a | n/a | 🛑 |
@@ -254,7 +264,7 @@ Three things this survey implies about how the rest of the codebase should evolv
 
 ## 8. Open questions
 
-- **Codex CLI:** when its hook API stabilises, does it allow blocking pre-tool-call? If yes, promote Codex to "A".
+- **Codex CLI:** extend the verified shell hook to other local tool inputs and result scanning; test trust, timeout, and missing-interpreter behavior before claiming full coverage.
 - **LangGraph subagent boundaries:** when a graph node delegates to a subagent (`Send` mechanic), does our `ToolNode` wrap see the subagent's tool calls or only the parent's? Need to verify.
 - **Claude Code daemon protocol:** the recommended deployment requires a long-running Python daemon Claude Code's hook script talks to (for sub-millisecond per-call cost). What's the IPC surface — Unix socket + JSON-RPC? FastAPI on localhost? Worth its own design doc when we build the adapter.
 - **Multi-host federation:** when one user runs Hermes on a server *and* Claude Code on a laptop *and* both talk to the same Discord channel, do they share a CK decision store? Out of scope for now but a real question for a team deployment.

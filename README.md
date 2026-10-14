@@ -81,6 +81,90 @@ install_clawkeeper(
 )
 ```
 
+## Test Codex CLI hooks (experimental)
+
+`examples/codex_pre_tool_use.py` is a minimal shell-only `PreToolUse` hook.
+It runs the existing execution, protected-path, URL, and script-body guards
+in-process. A denial uses Codex's hook response format; safe calls leave
+Codex's normal permissions and sandbox in place. It does not use the HTTP
+server or Watcher, and does not scan tool results or chat messages.
+
+Test the real CLI without changing your active Codex configuration:
+
+```bash
+uv run --extra dev python examples/codex_hook_smoke.py
+```
+
+The smoke test needs a local Codex CLI with hook support (verified on 0.162.1)
+and permission to bind a loopback port. It uses a deterministic local Responses
+fixture, temporary files, and invocation-only configuration. It makes no
+external model requests and never reads actual credentials. It verifies an
+unguarded control, hooks skipped pending trust, and guarded native shell calls.
+Only the guarded test invocation uses `--dangerously-bypass-hook-trust` for the
+reviewed fixture; no persisted trust or global hook configuration is changed.
+
+Start a separate interactive CLI with the hook enabled for that invocation:
+
+```bash
+bash examples/start_codex_guarded.sh
+```
+
+The launcher starts Codex with `--no-daemon`, keeps the native workspace-write
+sandbox and on-request approvals, and inherits your normal account and model
+settings. At startup it locates the project's Python interpreter and hook script
+relative to the launcher and passes their paths to Codex using `--config`.
+The hook applies only to the session started by the launcher.
+
+Before submitting tasks in the new CLI, open `/hooks`, inspect the `PreToolUse`
+entry whose command runs `codex_pre_tool_use.py`, and trust that definition.
+If the CLI asks you to restart after trust review, close it and run the same
+launcher again. The launcher never bypasses hook trust. To check protection
+without reading secrets, ask the new agent to run `printf CLAWKEEPER_OK`, then
+`printf '%s\\n' ~/.aws/credentials`. The first should execute; the second
+should be denied with a `[ClawKeeper]` reason. Exit this CLI and start ordinary
+`codex` to omit the invocation-only hook.
+
+To continue a saved conversation with the hook configured again, use the
+launcher for resume too:
+
+```bash
+bash examples/start_codex_guarded.sh resume <SESSION_ID>
+```
+
+Or use `resume --last` to continue the most recent session. Conversation
+history and invocation-only hook configuration are separate; check `/hooks`
+after reopening the conversation before relying on protection.
+
+For a persistent installation, merge this entry into your Codex `hooks.json`
+using absolute, quoted paths for your checkout and virtual environment:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"/absolute/path/ClawKeeper/.venv/bin/python\" \"/absolute/path/ClawKeeper/examples/codex_pre_tool_use.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Review and trust the definition with `/hooks` in a separate Codex session.
+Project hooks also require a trusted project. Merely writing a hook file does
+not activate protection. The prototype denies malformed input and guard
+exceptions, but runtime failures outside the script (missing interpreter,
+timeout, skipped/untrusted hook) are subject to Codex's own behavior. Hosted
+tools and subsequent input to an existing `write_stdin` session are outside
+this shell-only hook's coverage. See the [official hook documentation](https://learn.chatgpt.com/docs/hooks).
+
 ## Core guards
 
 The default guard set currently covers:

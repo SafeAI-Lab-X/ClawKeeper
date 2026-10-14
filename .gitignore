@@ -19,3 +19,9 @@ clawkeeper.md
 # Red-team runtime artifacts (regenerated per run)
 tests/redteam/results/
 tests/redteam/workspaces/
+
+# Local virtual environment
+.venv/
+
+# Locally generated uv dependency lockfile
+uv.lock

@@ -11,7 +11,7 @@ MiniMaxRegion = Literal["global_en", "cn_zh"]
 
 MINIMAX_PROVIDER_NAME = "MiniMax"
 MINIMAX_DEFAULT_REGION: MiniMaxRegion = "global_en"
-MINIMAX_DEFAULT_MODEL = "MiniMax-M3"
+MINIMAX_DEFAULT_MODEL = "MiniMax-M3.1-Flash"
 MINIMAX_API_KEY_ENV = "MINIMAX_API_KEY"
 
 
@@ -34,6 +34,8 @@ class MiniMaxModelDefinition:
     pricing_usd_per_million_tokens: MiniMaxTokenPricing
     input_modalities: tuple[str, ...]
     thinking: tuple[str, ...]
+    # Standard pricing above the documented 512k input tier, when applicable.
+    pricing_above_512k: MiniMaxTokenPricing | None = None
 
 
 @dataclass(frozen=True)
@@ -47,29 +49,35 @@ class MiniMaxEndpointDefinition:
 
 MINIMAX_MODELS: Mapping[str, MiniMaxModelDefinition] = MappingProxyType(
     {
+        "MiniMax-M3.1-Flash": MiniMaxModelDefinition(
+            model_id="MiniMax-M3.1-Flash",
+            context_window=1_000_000,
+            pricing_usd_per_million_tokens=MiniMaxTokenPricing(
+                input=0.15,
+                output=0.6,
+                cache_read=0.015,
+                cache_write=None,
+            ),
+            input_modalities=("text", "image", "video"),
+            thinking=("adaptive",),
+        ),
         "MiniMax-M3": MiniMaxModelDefinition(
             model_id="MiniMax-M3",
             context_window=1_000_000,
             pricing_usd_per_million_tokens=MiniMaxTokenPricing(
+                input=0.3,
+                output=1.2,
+                cache_read=0.06,
+                cache_write=None,
+            ),
+            input_modalities=("text", "image", "video"),
+            thinking=("adaptive", "disabled"),
+            pricing_above_512k=MiniMaxTokenPricing(
                 input=0.6,
                 output=2.4,
                 cache_read=0.12,
                 cache_write=None,
             ),
-            input_modalities=("text", "image", "video"),
-            thinking=("adaptive", "disabled"),
-        ),
-        "MiniMax-M2.7": MiniMaxModelDefinition(
-            model_id="MiniMax-M2.7",
-            context_window=204_800,
-            pricing_usd_per_million_tokens=MiniMaxTokenPricing(
-                input=0.3,
-                output=1.2,
-                cache_read=0.06,
-                cache_write=0.375,
-            ),
-            input_modalities=("text",),
-            thinking=("always_on",),
         ),
     }
 )
@@ -110,8 +118,10 @@ class MiniMaxProviderConfig:
     def __post_init__(self) -> None:
         if self.region not in MINIMAX_ENDPOINTS:
             raise ValueError(f"Unsupported MiniMax region: {self.region}")
-        if self.model_id not in MINIMAX_MODELS:
-            raise ValueError(f"Unsupported MiniMax model: {self.model_id}")
+        # The catalog contains recommendations, not a whitelist: preserve saved
+        # legacy IDs and custom deployments selected explicitly by the caller.
+        if not self.model_id.strip():
+            raise ValueError("MiniMax model must not be empty")
 
     @property
     def resolved_base_url(self) -> str:

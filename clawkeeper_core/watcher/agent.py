@@ -50,6 +50,7 @@ from clawkeeper_core.watcher.tools import (
 
 from clawkeeper_core.watcher.learner import STORE, synthesize_pattern, maybe_push_upstream
 from clawkeeper_core.watcher.providers import (  # noqa: E402
+    MINIMAX_MODELS,
     MiniMaxProviderConfig,
     resolve_minimax_provider_config,
 )
@@ -99,15 +100,16 @@ def _extract_first_json(text: str) -> dict | None:
 
 
 class _DirectModel:
-    def __init__(self, client, model_id):
+    def __init__(self, client, model_id, *, max_tokens=512):
         self._client = client
         self.model_id = model_id
+        self._max_tokens = max_tokens
 
     def __call__(self, messages, **kw):
         resp = self._client.chat.completions.create(
             model=self.model_id,
             messages=messages,
-            max_tokens=512,
+            max_tokens=self._max_tokens,
             temperature=0.2,
         )
 
@@ -123,7 +125,10 @@ def _make_minimax_model(provider_config: MiniMaxProviderConfig):
         base_url=provider_config.resolved_base_url,
         default_headers={"User-Agent": _BROWSER_UA},
     )
-    return _DirectModel(client, provider_config.model_id)
+    # Thinking shares the output budget: 512 tokens can exhaust it before the
+    # decision JSON. Let current MiniMax models use their API output defaults.
+    max_tokens = _openai_pkg.NOT_GIVEN if provider_config.model_id in MINIMAX_MODELS else 512
+    return _DirectModel(client, provider_config.model_id, max_tokens=max_tokens)
 
 
 def _make_default_model(provider_config: MiniMaxProviderConfig | None = None):

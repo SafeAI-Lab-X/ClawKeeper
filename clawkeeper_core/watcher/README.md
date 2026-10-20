@@ -28,8 +28,19 @@ The daemon binds to `127.0.0.1:9099` by default. All env knobs:
 | `CK_WATCHER_API_KEY` | `$OPENAI_API_KEY` | |
 | `MINIMAX_API_KEY` | unset | MiniMax API key used when `CK_WATCHER_PROVIDER=MiniMax` |
 
-MiniMax defaults to `MiniMax-M3`. Set `CK_WATCHER_MODEL=MiniMax-M2.7` to select the
-other declared model. `CK_WATCHER_BASE_URL` remains available as an explicit endpoint override.
+MiniMax defaults to `MiniMax-M3.1-Flash`. Set `CK_WATCHER_MODEL=MiniMax-M3` to select
+the other recommended model. Explicit legacy or custom model IDs remain supported;
+`CK_WATCHER_BASE_URL` remains available as an explicit endpoint override.
+
+The catalog lists standard USD token pricing. For MiniMax-M3, the base rate applies
+up to the documented 512k input tier and `pricing_above_512k` describes the higher
+tier. Priority pricing is 1.5 times standard for MiniMax-M3; the Watcher does not
+request priority service. Flash uses adaptive thinking by default, and the Watcher
+leaves thinking and reasoning effort at the API defaults. The two recommended
+models also use the API's output limit instead of the Watcher's legacy 512-token
+cap, because thinking tokens share that budget with the decision JSON.
+
+Model and request details: [MiniMax API documentation](https://platform.minimax.io/docs/api-reference/text-openai-api).
 
 Health check:
 

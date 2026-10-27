@@ -8,10 +8,25 @@ decision when the daemon is unreachable or slow.
 from __future__ import annotations
 
 import json
+import logging
 import os
+import threading
+import time
+from http import HTTPStatus
 from typing import Any
 
 import httpx
+
+from clawkeeper_core.learned_rules import (
+    RuleSnapshot,
+    audit,
+    install_snapshot,
+    snapshot_from_wire,
+)
+
+
+class RuleSyncError(RuntimeError):
+    """The Adapter cannot establish a validated rule snapshot for this call."""
 
 
 class WatcherClient:
@@ -35,11 +50,14 @@ class WatcherClient:
             on_unavailable = "ask"
         self.on_unavailable = on_unavailable
         self._client = httpx.Client(timeout=timeout_s)
+        self._rules: RuleSnapshot | None = None
+        self._rules_lock = threading.Lock()
+        self._server_instance: str | None = None
 
     def close(self) -> None:
         try:
             self._client.close()
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
     def __enter__(self):
@@ -50,12 +68,63 @@ class WatcherClient:
 
     # ─── Public API ────────────────────────────────────────────────────────
 
+    def sync_rules(self) -> RuleSnapshot:
+        """Pull a complete policy or retain the last one on failure.
+
+        The caller must defer the current tool call on RuleSyncError; retaining
+        old policy does not claim that a synchronization succeeded.
+        """
+        with self._rules_lock:
+            try:
+                headers = {"Accept-Encoding": "identity"}
+                if self._rules:
+                    headers["If-None-Match"] = f'"{self._rules.version}"'
+                deadline = time.monotonic() + self.timeout_s
+                with self._client.stream("GET", f"{self.base_url}/watcher/rules", headers=headers) as response:
+                    if response.status_code == HTTPStatus.NOT_MODIFIED:
+                        if self._rules is None:
+                            raise ValueError("304 without a validated local snapshot")
+                        if response.headers.get("etag") != f'"{self._rules.version}"':
+                            raise ValueError("304 rules ETag mismatch")
+                        snapshot = self._rules
+                        server_instance = response.headers.get("x-clawkeeper-instance")
+                        if not server_instance:
+                            raise ValueError("304 missing server instance")
+                    else:
+                        response.raise_for_status()
+                        if response.headers.get("content-encoding", "identity") != "identity":
+                            raise ValueError("compressed rule snapshots are unsupported")
+                        body = bytearray()
+                        chunks = [response.content] if response.is_stream_consumed else response.iter_raw()
+                        for chunk in chunks:
+                            if len(body) + len(chunk) > 1024 * 1024:
+                                raise ValueError("rule snapshot exceeds byte limit")
+                            if time.monotonic() > deadline:
+                                raise ValueError("rule download budget exhausted")
+                            body.extend(chunk)
+                        payload = json.loads(body)
+                        snapshot = snapshot_from_wire(payload)
+                        if response.headers.get("etag") != f'"{snapshot.version}"':
+                            raise ValueError("rules ETag mismatch")
+                        server_instance = payload["instance_id"]
+                install_snapshot(snapshot, authority=self.base_url)
+                self._rules = snapshot
+                self._server_instance = server_instance
+                audit("synchronized", rules_version=snapshot.version,
+                      server_instance_id=self._server_instance, authority=self.base_url)
+                return snapshot
+            except Exception as exc:
+                audit("sync_failed", level=logging.WARNING, authority=self.base_url,
+                      rules_version=self._rules.version if self._rules else None,
+                      skip_reason=type(exc).__name__)
+                raise RuleSyncError("Watcher rule synchronization failed; defer tool call") from exc
+
     def health(self) -> dict[str, Any]:
         try:
             r = self._client.get(f"{self.base_url}/watcher/health")
             r.raise_for_status()
             return r.json()
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             return {"status": "unreachable", "error": repr(e)}
 
     def remember_intent(self, session_id: str, intent: str) -> bool:
@@ -66,7 +135,7 @@ class WatcherClient:
             )
             r.raise_for_status()
             return True
-        except Exception:  # noqa: BLE001
+        except Exception:
             return False
 
     def evaluate(

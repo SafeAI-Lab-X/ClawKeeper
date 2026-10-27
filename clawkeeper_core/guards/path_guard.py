@@ -13,6 +13,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from clawkeeper_core.learned_rules import match_learned
+
 _DEFAULT_FAILURE_POLICY = "fail-closed"
 _BASH_LIKE_HINT_RE = re.compile(r"bash|shell|exec|command|terminal", re.IGNORECASE)
 
@@ -207,4 +209,4 @@ def guard_before_tool_call(event: dict[str, Any]) -> dict[str, Any]:
                 "severity": hit.get("severity"),
                 "reason": hit.get("reason"),
             }
-    return {"block": False}
+    return match_learned("path_guard", event) or {"block": False}

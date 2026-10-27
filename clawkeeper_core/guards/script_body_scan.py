@@ -25,6 +25,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+from clawkeeper_core.learned_rules import match_learned
+
 # Markers for sensitive directories / files. Case-insensitive matched.
 _SENSITIVE_DIR_MARKERS = [
     ".aws/credentials",
@@ -108,13 +110,17 @@ def _find_all(text: str, needles, *, lower: bool = False) -> list[tuple[int, str
     return out
 
 
-def script_body_scan_guard(event: dict) -> Optional[dict]:
+def script_body_scan_guard(event: dict) -> Optional[dict]:  # noqa: PLR0911 -- independent learned rule path
     """Block when a command body contains BOTH a sensitive-dir marker AND a
     file-read primitive within `_PROXIMITY` chars of each other.
     """
     cmd = (event.get("params") or {}).get("command", "") or ""
     if not cmd:
         return None
+
+    learned = match_learned("script_body_scan", event)
+    if learned is not None:
+        return learned
 
     dir_hits = _find_all(cmd, _SENSITIVE_DIR_MARKERS, lower=True)
     if not dir_hits:

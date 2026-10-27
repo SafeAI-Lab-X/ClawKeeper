@@ -33,6 +33,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Optional
 
+from clawkeeper_core.learned_rules import pin_snapshot
+
 GuardEvent = dict[str, Any]
 GuardDecision = dict[str, Any]
 GuardCallable = Callable[[GuardEvent], Optional[GuardDecision]]
@@ -77,6 +79,11 @@ def run_guard_chain(
 
     Returns ``(first_blocking_decision_or_None, all_decisions_emitted)``.
     """
+    with pin_snapshot():
+        return _run_guard_chain(guards, event, stop_on_block=stop_on_block)
+
+
+def _run_guard_chain(guards, event, *, stop_on_block):
     seen: list[GuardDecision] = []
     blocking: GuardDecision | None = None
     for guard in guards:

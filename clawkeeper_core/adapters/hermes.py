@@ -39,6 +39,7 @@ from clawkeeper_core.guards.return_content_scan import return_content_scan_guard
 from clawkeeper_core.guards.script_body_scan import script_body_scan_guard
 from clawkeeper_core.guards.url_safety import url_safety_guard
 from clawkeeper_core.judge import Judge
+from clawkeeper_core.learned_rules import match_learned, pin_snapshot
 from clawkeeper_core.schemas import AgentEvent
 
 if TYPE_CHECKING:
@@ -143,6 +144,10 @@ def install(
     """
     pre = pre_guards if pre_guards is not None else _default_pre_guards()
     post = post_guards if post_guards is not None else _default_post_guards()
+    watcher_client = None
+    if watcher_url:
+        from clawkeeper_core.watcher.client import WatcherClient  # noqa: PLC0415 -- optional Watcher
+        watcher_client = WatcherClient(base_url=watcher_url, on_unavailable="ask")
 
     # 1) Approval-callback path (Hermes-flagged commands → Judge decides).
     import tools.terminal_tool as terminal_tool
@@ -161,6 +166,13 @@ def install(
         if pg.get("block"):
             _record_decision(agent, "deny", source="path_guard",
                              reason=pg.get("reason"), evidence=pg)
+            return "deny"
+
+        # Honor synchronized script rules on the approval surface as well.
+        learned_script = match_learned("script_body_scan", event)
+        if learned_script:
+            _record_decision(agent, "deny", source=learned_script["source"],
+                             reason=learned_script["reason"], evidence=learned_script["evidence"])
             return "deny"
 
         # Build the Judge's forwarded-context payload.
@@ -184,14 +196,15 @@ def install(
                          evidence=result if isinstance(result, dict) else {})
         return hermes_string
 
-    terminal_tool.set_approval_callback(approval_cb)
-    computer_use_tool.set_approval_callback(approval_cb)
+    guarded_approval = _with_rule_sync(approval_cb, watcher_client, agent, "deny")
+    terminal_tool.set_approval_callback(guarded_approval)
+    computer_use_tool.set_approval_callback(guarded_approval)
 
     # NEW: register a Hermes `pre_tool_call` plugin hook.  This is the
     # documented Hermes API for blocking tool execution from outside the
     # built-in approval path — fires for every tool call (not just regex-
     # flagged ones), and Hermes honours the returned block message.
-    _register_pre_tool_call_hook(judge, agent, pre_guards=pre, watcher_url=watcher_url)
+    _register_pre_tool_call_hook(judge, agent, pre_guards=pre, watcher_client=watcher_client)
 
     # 2) Observation + proactive-guard hooks on the agent instance.
     _register_observers(judge, agent, pre_guards=pre, post_guards=post)
@@ -229,16 +242,24 @@ def _recent_messages(agent: Any, n: int = 20) -> list:
     return history[-n:]
 
 
-def _register_pre_tool_call_hook(judge, agent, *, pre_guards, watcher_url=None):
-    watcher_client = None
-    if watcher_url:
+def _with_rule_sync(callback, watcher_client, agent, blocked_result):
+    if watcher_client is None:
+        return callback
+
+    def synchronized(*args, **kwargs):
         try:
-            from clawkeeper_core.watcher.client import WatcherClient
-            watcher_client = WatcherClient(base_url=watcher_url, on_unavailable="ask")
-        except Exception as exc:
-            import sys
-            print(f"[clawkeeper] watcher client init failed: {exc!r}", file=sys.stderr)
-            watcher_client = None
+            snapshot = watcher_client.sync_rules()
+        except Exception:
+            _record_decision(agent, "deny", source="watcher:rule_sync",
+                             reason="Rule synchronization failed; ask operator", evidence={"decision": "ask"})
+            return dict(blocked_result) if isinstance(blocked_result, dict) else blocked_result
+        with pin_snapshot(snapshot):
+            return callback(*args, **kwargs)
+
+    return synchronized
+
+
+def _register_pre_tool_call_hook(judge, agent, *, pre_guards, watcher_client=None):
 
     """Register a Hermes plugin `pre_tool_call` hook that runs CK's guard chain.
 
@@ -305,7 +326,10 @@ def _register_pre_tool_call_hook(judge, agent, *, pre_guards, watcher_url=None):
 
         return None
 
-    manager._hooks.setdefault("pre_tool_call", []).append(ck_pre_tool_call)
+    manager._hooks.setdefault("pre_tool_call", []).append(_with_rule_sync(
+        ck_pre_tool_call, watcher_client, agent,
+        {"action": "block", "message": "[ClawKeeper:watcher] Rule synchronization failed; ask operator"},
+    ))
 
 
 def _register_observers(

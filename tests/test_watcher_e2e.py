@@ -16,6 +16,8 @@ from typing import Any
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("isolated_learning")
+
 from fastapi.testclient import TestClient
 
 

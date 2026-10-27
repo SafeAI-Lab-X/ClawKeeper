@@ -14,6 +14,8 @@ tool-calling JSON format natively.
 from __future__ import annotations
 
 import json
+import logging
+import math
 import os
 import re
 import time
@@ -23,6 +25,8 @@ from typing import Any
 # UA patch for api.scode.chat — applied at import so smolagents' inner
 # openai client respects it. Idempotent if already patched.
 import openai as _openai_pkg
+
+from clawkeeper_core.learned_rules import audit, audit_context, current_snapshot
 
 _BROWSER_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
 if not getattr(_openai_pkg.OpenAI, "_ck_ua_patched", False):
@@ -38,18 +42,20 @@ if not getattr(_openai_pkg.OpenAI, "_ck_ua_patched", False):
     _openai_pkg.OpenAI._ck_ua_patched = True
 
 
+from clawkeeper_core.watcher.learner import STORE, maybe_push_upstream, synthesize_pattern
 from clawkeeper_core.watcher.policy import apply_post_filter
 from clawkeeper_core.watcher.prompts import (
     SYSTEM_PROMPT,
     render_evaluation_prompt,
 )
+from clawkeeper_core.watcher.reload import apply_learned_patterns
 from clawkeeper_core.watcher.tools import (
     HISTORY,
+    classify_finding,
     gather_deterministic_findings,
 )
 
-from clawkeeper_core.watcher.learner import STORE, synthesize_pattern, maybe_push_upstream
-from clawkeeper_core.watcher.reload import apply_learned_patterns
+_LEARNING_CONFIDENCE = 0.75
 
 
 @dataclass
@@ -122,15 +128,19 @@ def _make_default_model():
 
 
 def _maybe_learn(tool_name: str, args: dict | None, final: dict, model) -> None:
-    command = str((args or {}).get("command", str(args or "")[:500]))
-    candidate = synthesize_pattern(command, final.get("reason", ""), model)
+    command = str((args or {}).get("command", str(args or "")))
+    candidate = synthesize_pattern(command, final.get("reason", ""), model,
+                                   tool_name=tool_name, args=args)
+    if candidate is None:
+        audit("rejected", skip_reason="no_valid_candidate", tool_name=tool_name)
     if candidate and STORE.add(candidate):
         apply_learned_patterns()
         maybe_push_upstream(candidate)
         # broadcast to dashboard
         try:
-            from clawkeeper_core.watcher.daemon import _broadcast
             import time as _t
+
+            from clawkeeper_core.watcher.daemon import _broadcast
             _broadcast({"type": "learned", "ts": int(_t.time()),
                         "pattern": candidate.pattern, "guard_target": candidate.guard_target,
                         "confidence": candidate.confidence})
@@ -224,10 +234,33 @@ class Watcher:
         )
 
         # Self-improvement: guards missed it but Watcher caught it → synthesize pattern
-        if (final["decision"] in ("deny", "ask")
-                and not det
-                and float(final.get("confidence") or 0) >= 0.75):
-            _maybe_learn(tool_name, args, final, self.model)
+        kinds = {classify_finding(f) for f in det}
+        try:
+            confidence = float(final.get("confidence") or 0)
+        except (ValueError, TypeError):
+            confidence = 0.0
+        if "error" in kinds:
+            skip_reason = "guard_error"
+        elif kinds - {"clean"}:
+            skip_reason = "deterministic_finding"
+        elif final["decision"] not in ("deny", "ask"):
+            skip_reason = "decision_allow"
+        elif not math.isfinite(confidence) or not _LEARNING_CONFIDENCE <= confidence <= 1:
+            skip_reason = "low_or_invalid_confidence"
+        else:
+            skip_reason = ""
+        context = {"session_id": session_id, "tool_name": tool_name,
+                   "rules_version": current_snapshot().version,
+                   "guard_sources": [f.get("source", "?") for f in det]}
+        if skip_reason:
+            audit("skipped", skip_reason=skip_reason, **context)
+        else:
+            audit("attempted", **context)
+            try:
+                with audit_context(**context):
+                    _maybe_learn(tool_name, args, final, self.model)
+            except Exception:  # best effort learning must not discard a safety decision
+                audit("failed", level=logging.WARNING, skip_reason="learning_failed", **context)
 
         # 5) Remember this call AFTER deciding (so the next call sees it as recent)
         self.history.remember_call(session_id, tool_name, args)
@@ -238,7 +271,7 @@ class Watcher:
             reason=final["reason"],
             severity=str(final.get("severity", "medium")),
             signals=list(final.get("signals") or []),
-            confidence=float(final.get("confidence", 0.0) or 0.0),
+            confidence=confidence if math.isfinite(confidence) and 0 <= confidence <= 1 else 0.0,
             post_filter_overrode=bool(final.get("post_filter_overrode", False)),
             watcher_latency_ms=latency_ms,
             raw_watcher_proposal=proposal,

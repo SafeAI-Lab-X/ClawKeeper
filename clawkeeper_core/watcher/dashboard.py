@@ -175,7 +175,15 @@ let sessions = {};
 let blocked_cmds = [];
 const GUARD_NAMES = ['exec_gate','path_guard','script_body_scan','url_safety','credential_redact','return_content_scan','input_validator','budget'];
 
-function sev_class(s){ return 'sev-'+(s||'low').toLowerCase(); }
+function escape_html(value){
+  return String(value == null ? '' : value).replace(/[&<>"']/g, ch =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+}
+
+function sev_class(s){
+  const severity = String(s||'low').toLowerCase();
+  return 'sev-'+(['low','medium','high','critical','hardline'].includes(severity)?severity:'low');
+}
 
 function fmt_cmd(cmd){ return cmd ? cmd.slice(0,80)+(cmd.length>80?'…':'') : '(no command)'; }
 
@@ -236,16 +244,16 @@ function update_sessions(){
   if(!rows.length){ el.innerHTML='<div style="color:var(--gray);font-size:11px">No sessions yet</div>'; return; }
   el.innerHTML = rows.map(([id,s])=>`
     <div class="sess-row">
-      <div class="sess-id">${id.slice(0,12)}</div>
-      <div class="sess-intent">${s.intent||'(no intent)'}</div>
-      <div class="sess-calls">${s.calls}</div>
+      <div class="sess-id">${escape_html(id.slice(0,12))}</div>
+      <div class="sess-intent">${escape_html(s.intent||'(no intent)')}</div>
+      <div class="sess-calls">${escape_html(s.calls)}</div>
     </div>`).join('');
 }
 
 function update_ticker(){
   if(!blocked_cmds.length) return;
   $('ticker').innerHTML = '<span>BLOCKED:</span> '+blocked_cmds.slice(-5).reverse().map(c=>
-    `<span style="color:#ff6666;margin-right:16px">[${c.tool}] ${fmt_cmd(c.cmd)}</span>`
+    `<span style="color:#ff6666;margin-right:16px">[${escape_html(c.tool)}] ${escape_html(fmt_cmd(c.cmd))}</span>`
   ).join('');
 }
 
@@ -253,15 +261,15 @@ function make_guard_rows(findings){
   if(!findings||!findings.length) return '<div style="color:var(--gray);font-size:11px;padding:4px 0">No deterministic guard findings</div>';
   return findings.map(f=>`
     <div class="guard-row">
-      <div class="guard-name">${f.source||'?'}</div>
-      <div class="guard-sev ${sev_class(f.severity)}">${f.severity||'?'}</div>
+      <div class="guard-name">${escape_html(f.source||'?')}</div>
+      <div class="guard-sev ${sev_class(f.severity)}">${escape_html(f.severity||'?')}</div>
       <div style="color:${f.block?'#ff6666':'#88cc88'};font-size:11px;min-width:40px">${f.block?'BLOCK':'pass'}</div>
-      <div class="guard-reason">${(f.reason||'').slice(0,120)}</div>
+      <div class="guard-reason">${escape_html((f.reason||'').slice(0,120))}</div>
     </div>`).join('');
 }
 
 function add_event(ev){
-  const d = ev.decision||'allow';
+  const d = ['allow','ask','deny'].includes(ev.decision)?ev.decision:'ask';
   const cmd = (ev.command||ev.args&&JSON.stringify(ev.args)||'').slice(0,200);
   const findings = ev.det_findings||[];
   const watcher_used = ev.watcher_used||false;
@@ -277,7 +285,7 @@ function add_event(ev){
     const conf_pct = conf||0;
     watcher_html = `<div class="watcher-box">
       <div class="wlbl">⬡ Watcher LLM</div>
-      <div class="watcher-reason">${ev.reason}</div>
+      <div class="watcher-reason">${escape_html(ev.reason)}</div>
       ${conf!=null?`<div class="conf-bar"><div class="conf-fill" style="width:${conf_pct}%"></div></div>
       <div style="font-size:10px;color:var(--gray);margin-top:2px">confidence ${conf_pct}%${ev.post_filter_overrode?' · <span style="color:#ff9944">post-filter overrode</span>':''}</div>`:''}
     </div>`;
@@ -287,16 +295,16 @@ function add_event(ev){
   card.className = `ev ${d} new`;
   card.innerHTML = `
     <div class="ev-top">
-      <div class="ev-tool">${ev.tool_name||'?'}</div>
-      <div class="ev-cmd">${fmt_cmd(cmd)}</div>
+      <div class="ev-tool">${escape_html(ev.tool_name||'?')}</div>
+      <div class="ev-cmd">${escape_html(fmt_cmd(cmd))}</div>
       <div class="badge ${d}">${d.toUpperCase()}</div>
       ${watcher_used?'<div class="badge watcher">LLM</div>':'<div class="badge guard">⚡ guard</div>'}
     </div>
     <div class="ev-meta">
       <span>${ts_str(ev.ts)}</span>
-      ${ev.session_id?`<span>session: ${ev.session_id.slice(0,10)}</span>`:''}
-      ${latency?`<span>${latency}</span>`:''}
-      ${ev.severity?`<span style="color:${ev.severity==='hardline'||ev.severity==='critical'?'#ff6666':ev.severity==='high'?'#ff9944':'#88cc88'}">${ev.severity}</span>`:''}
+      ${ev.session_id?`<span>session: ${escape_html(ev.session_id.slice(0,10))}</span>`:''}
+      ${latency?`<span>${escape_html(latency)}</span>`:''}
+      ${ev.severity?`<span style="color:${ev.severity==='hardline'||ev.severity==='critical'?'#ff6666':ev.severity==='high'?'#ff9944':'#88cc88'}">${escape_html(ev.severity)}</span>`:''}
     </div>
     <div class="ev-detail">
       <div style="font-size:10px;color:var(--gray);margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px">Guard Pipeline</div>
@@ -316,10 +324,10 @@ function add_learned_event(ev){
   card.innerHTML = `
     <div class="ev-top">
       <div class="ev-tool" style="color:var(--gold)">⟳ Pattern Learned</div>
-      <div class="badge" style="background:#2a1a00;color:var(--gold)">${ev.guard_target||'?'}</div>
+      <div class="badge" style="background:#2a1a00;color:var(--gold)">${escape_html(ev.guard_target||'?')}</div>
       <div class="badge" style="background:#1a1a00;color:#aaa">conf ${Math.round((ev.confidence||0)*100)}%</div>
     </div>
-    <div class="ev-pattern">${ev.pattern||''}</div>
+    <div class="ev-pattern">${escape_html(ev.pattern||'')}</div>
     <div class="ev-meta"><span>${ts_str(ev.ts)}</span></div>`;
   feed.insertBefore(card, feed.firstChild);
   setTimeout(()=>card.classList.remove('new'), 700);
@@ -328,7 +336,7 @@ function add_learned_event(ev){
 function handle_event(ev){
   if(ev.type === 'eval'){
     stats.total++;
-    const d = ev.decision||'allow';
+    const d = ['allow','ask','deny'].includes(ev.decision)?ev.decision:'ask';
     stats[d] = (stats[d]||0)+1;
     if(d==='deny'||d==='ask') stats.blocked++;
     // guard counts
@@ -373,8 +381,8 @@ function fetch_patterns(){
     if(!pats.length){ el.innerHTML='<div style="color:var(--gray);font-size:11px">None yet</div>'; return; }
     el.innerHTML = pats.map(p=>`
       <div class="pat-chip">
-        <span class="pt">${p.guard_target}</span>
-        <span>${(p.pattern||'').slice(0,40)}</span>
+        <span class="pt">${escape_html(p.guard_target)}</span>
+        <span>${escape_html((p.pattern||'').slice(0,40))}</span>
         <span class="pt">${Math.round((p.confidence||0)*100)}%</span>
       </div>`).join('');
   }).catch(()=>{});

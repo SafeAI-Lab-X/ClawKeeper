@@ -1,50 +1,53 @@
-"""Hot-reload bridge — applies learned patterns to live guard modules.
-
-Called at daemon startup and after each new pattern is persisted.
-Idempotent: tracks loaded pattern hashes so re-running is safe.
-"""
-
+"""Revalidate persisted candidates and atomically replace process-local policy."""
 from __future__ import annotations
 
-import hashlib
-import re
+import logging
+import threading
+import time
 
-from clawkeeper_core.watcher.learner import STORE
+from clawkeeper_core.bounded_regex import RegexResourceError
+from clawkeeper_core.learned_rules import (
+    audit,
+    install_snapshot,
+    make_snapshot,
+    mark_policy_unavailable,
+)
+from clawkeeper_core.watcher.learner import STORE, StoreUnavailableError, validate_candidate
 
-_loaded_hashes: set[str] = set()
+_reload_lock = threading.RLock()
 
 
 def apply_learned_patterns() -> int:
-    """Load new patterns from store into live guard module globals.
+    """Newly installed count, local to this process. Also applies removals.
 
-    Returns the number of newly applied patterns.
+    Invalid historical records remain stored for inspection. This is not an
+    acknowledgement of Adapter synchronization.
     """
-    import clawkeeper_core.security_rules as _rules
-    from clawkeeper_core.guards import script_body_scan as _sbs
-    from clawkeeper_core.guards.exec_gate import reset_exec_gate_cache
-
-    added = 0
-    for candidate in STORE.all():
-        h = hashlib.sha256(candidate.pattern.encode()).hexdigest()
-        if h in _loaded_hashes:
-            continue
+    with _reload_lock:
         try:
-            rx = re.compile(candidate.pattern, re.IGNORECASE)
-        except re.error:
-            continue
-
-        target = candidate.guard_target
-        if target == "exec_gate":
-            _rules.DANGEROUS_COMMAND_PATTERNS.append(rx)
-            reset_exec_gate_cache()
-        elif target == "script_body_scan":
-            # script_body_scan uses string lists; append the raw pattern as a marker
-            _sbs._SENSITIVE_DIR_MARKERS.append(candidate.pattern)
-        elif target == "path_guard":
-            _rules.DANGEROUS_COMMAND_PATTERNS.append(rx)
-            reset_exec_gate_cache()
-
-        _loaded_hashes.add(h)
-        added += 1
-
-    return added
+            candidates = STORE.all()
+        except StoreUnavailableError:
+            mark_policy_unavailable()
+            return 0
+        deadline = time.monotonic() + 5
+        rules = []
+        for candidate in candidates:
+            if time.monotonic() > deadline:
+                mark_policy_unavailable("learned_validation_unavailable")
+                return 0
+            try:
+                rule = validate_candidate(candidate)
+            except RegexResourceError:
+                mark_policy_unavailable("learned_validation_unavailable")
+                return 0
+            except (TypeError, ValueError) as exc:
+                audit("rejected", level=logging.WARNING, guard_target=candidate.guard_target,
+                      skip_reason=str(exc))
+                continue
+            rules.append(rule)
+            audit("validated", rule_id=rule.id, guard_target=rule.guard_target)
+        try:
+            return install_snapshot(make_snapshot(rules))
+        except ValueError:
+            mark_policy_unavailable()
+            return 0

@@ -9,6 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("isolated_learning")
+
 from clawkeeper_core.watcher.learner import (
     LearnedPatternStore,
     PatternCandidate,
@@ -126,16 +128,20 @@ def test_apply_learned_patterns_adds_to_exec_gate(tmp_path):
     from clawkeeper_core.watcher import reload as rl
 
     store = _make_store(tmp_path)
-    c = _candidate(pattern=r"__ck_test_unique_xyz__", guard_target="exec_gate")
-    store.add(c)
+    c = _candidate(pattern=r"__ck_test_unique_xyz__", guard_target="exec_gate",
+                   source_command="echo __ck_test_unique_xyz__")
+    assert store.add(c)
 
     before = len(rules.DANGEROUS_COMMAND_PATTERNS)
     with patch("clawkeeper_core.watcher.reload.STORE", store):
-        rl._loaded_hashes.clear()
         added = rl.apply_learned_patterns()
 
     assert added == 1
-    assert len(rules.DANGEROUS_COMMAND_PATTERNS) == before + 1
+    assert len(rules.DANGEROUS_COMMAND_PATTERNS) == before
+    from clawkeeper_core.guards.exec_gate import guard_execution, reset_exec_gate_cache
+    reset_exec_gate_cache()
+    assert guard_execution({"toolName": "terminal", "params": {
+        "command": "echo __ck_test_unique_xyz__"}})["block"] is True
     # Idempotent second call
     with patch("clawkeeper_core.watcher.reload.STORE", store):
         added2 = rl.apply_learned_patterns()

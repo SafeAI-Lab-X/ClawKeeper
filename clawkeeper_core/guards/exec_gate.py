@@ -13,19 +13,23 @@ import re
 from pathlib import Path
 from typing import Any
 
+from clawkeeper_core.learned_rules import match_learned
 from clawkeeper_core.security_rules import DANGEROUS_COMMAND_PATTERNS
 
 _DEFAULT_FAILURE_POLICY = "fail-closed"
 _BASH_LIKE_HINT_RE = re.compile(r"bash|shell|exec|command|terminal", re.IGNORECASE)
 
-_DEFAULT_GATE = {
-    "rules": [
-        {"id": f"dangerous-cmd-{i}", "regex": p, "severity": "HIGH",
-         "reason": "Matches a known destructive command pattern"}
-        for i, p in enumerate(DANGEROUS_COMMAND_PATTERNS)
-    ],
-    "config": {"enabled": True, "failurePolicy": _DEFAULT_FAILURE_POLICY, "bashLikeTools": []},
-}
+def _build_default_gate() -> dict[str, Any]:
+    return {
+        "rules": [
+            {"id": f"dangerous-cmd-{i}", "regex": p, "severity": "HIGH",
+             "reason": "Matches a known destructive command pattern"}
+            for i, p in enumerate(DANGEROUS_COMMAND_PATTERNS)
+        ],
+        "config": {"enabled": True, "failurePolicy": _DEFAULT_FAILURE_POLICY, "bashLikeTools": []},
+        "_source": None,
+    }
+
 
 _cached: dict[str, Any] | None = None
 
@@ -33,7 +37,8 @@ _cached: dict[str, Any] | None = None
 def load_exec_gate(rules_path: str | Path | None = None) -> dict[str, Any]:
     global _cached
     if rules_path is None:
-        _cached = _DEFAULT_GATE
+        if _cached is None or _cached.get("_source") is not None:
+            _cached = _build_default_gate()
         return _cached
     if _cached and _cached.get("_source") == str(rules_path):
         return _cached
@@ -118,4 +123,4 @@ def guard_execution(event: dict[str, Any]) -> dict[str, Any]:
                 "reason": rule.get("reason"),
                 "command": command[:500] + "…" if len(command) > 500 else command,
             }
-    return {"block": False}
+    return match_learned("exec_gate", event) or {"block": False}

@@ -13,18 +13,21 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import time
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
+from clawkeeper_core.bounded_regex import MAX_PATTERN_CHARS
+from clawkeeper_core.learned_rules import INSTANCE_ID, current_snapshot, policy_error
 from clawkeeper_core.watcher.agent import Watcher, WatcherDecision
-from clawkeeper_core.watcher.learner import STORE
-from clawkeeper_core.watcher.reload import apply_learned_patterns
 from clawkeeper_core.watcher.dashboard import DASHBOARD_HTML
+from clawkeeper_core.watcher.learner import STORE, StoreUnavailableError, scrub_sample
+from clawkeeper_core.watcher.reload import apply_learned_patterns
 
 # ── Live event bus (SSE broadcast) ─────────────────────────────────────────
 _event_bus: list[asyncio.Queue] = []
@@ -63,7 +66,7 @@ class IntentRequest(BaseModel):
     intent: str
 
 
-def build_app(watcher: Watcher | None = None) -> FastAPI:
+def build_app(watcher: Watcher | None = None) -> FastAPI:  # noqa: PLR0915 -- route registrations
     app = FastAPI(title="ClawKeeper Watcher", version="0.2.0")
     apply_learned_patterns()  # load persisted patterns from previous runs
     app.state.watcher = watcher or Watcher()
@@ -72,10 +75,31 @@ def build_app(watcher: Watcher | None = None) -> FastAPI:
     def health():
         w: Watcher = app.state.watcher
         return {
-            "status": "ok",
+            "status": "degraded" if policy_error() else "ok",
+            "rules_error": policy_error(),
             "model_id": getattr(w.model, "model_id", "?"),
             "known_sessions": len(getattr(w.history, "_calls", {})),
+            **{k: v for k, v in current_snapshot().as_dict().items() if k != "rules"},
         }
+
+    @app.get("/watcher/rules")
+    def rules(req: Request):
+        if policy_error():
+            raise HTTPException(status_code=503, detail="learned policy unavailable")
+        snapshot = current_snapshot()
+        etag = f'"{snapshot.version}"'
+        headers = {"ETag": etag, "Cache-Control": "no-cache",
+                   "X-ClawKeeper-Instance": INSTANCE_ID}
+        if req.headers.get("if-none-match") == etag:
+            return Response(status_code=304, headers=headers)
+        return JSONResponse(snapshot.as_dict(), headers=headers)
+
+    @app.post("/watcher/rules/reload")
+    def reload_rules():
+        apply_learned_patterns()
+        if policy_error():
+            raise HTTPException(status_code=503, detail="learned policy unavailable")
+        return {"version": current_snapshot().version, "status": "ok"}
 
     @app.post("/watcher/intent")
     def remember_intent(req: IntentRequest):
@@ -92,8 +116,8 @@ def build_app(watcher: Watcher | None = None) -> FastAPI:
                 args=req.args,
                 stated_intent=req.stated_intent,
             )
-        except Exception as e:  # noqa: BLE001 — never let the daemon crash a host
-            raise HTTPException(status_code=500, detail=f"watcher error: {e!r}")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail="watcher evaluation failed") from e
         resp = EvaluateResponse(
             decision=d.decision,
             reason=d.reason,
@@ -154,7 +178,7 @@ def build_app(watcher: Watcher | None = None) -> FastAPI:
                     try:
                         data = await asyncio.wait_for(q.get(), timeout=15)
                         yield f"data: {data}\n\n"
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         yield ": keepalive\n\n"
             finally:
                 if q in _event_bus:
@@ -167,11 +191,23 @@ def build_app(watcher: Watcher | None = None) -> FastAPI:
 
     @app.get("/watcher/learned")
     def list_learned():
-        return [c.__dict__ for c in STORE.all()]
+        try:
+            candidates = STORE.all()
+        except StoreUnavailableError as exc:
+            raise HTTPException(status_code=503, detail="learned store unavailable") from exc
+        return [{"pattern": scrub_sample(c.pattern) if isinstance(c.pattern, str) and len(c.pattern) <= MAX_PATTERN_CHARS else "[rejected]",
+                 "guard_target": c.guard_target, "confidence": c.confidence,
+                 "created_at": c.created_at, "source_command": "",
+                 "source_args": None} for c in candidates]
 
     @app.delete("/watcher/learned/{pattern_hash}")
     def remove_learned(pattern_hash: str):
-        removed = STORE.remove(pattern_hash)
+        try:
+            removed = STORE.remove(pattern_hash)
+        except StoreUnavailableError as exc:
+            raise HTTPException(status_code=503, detail="learned store unavailable") from exc
+        if removed:
+            apply_learned_patterns()
         return {"removed": removed}
 
     return app
@@ -179,8 +215,9 @@ def build_app(watcher: Watcher | None = None) -> FastAPI:
 
 def main() -> None:
     """Console entry point — `clawkeeper-watcher`."""
-    import uvicorn
+    import uvicorn  # noqa: PLC0415 -- CLI-only dependency initialization
 
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     app = build_app()
     host = os.environ.get("CK_WATCHER_HOST", "127.0.0.1")
     port = int(os.environ.get("CK_WATCHER_PORT", "9099"))

@@ -19,7 +19,7 @@ from clawkeeper_core.guards.path_guard import guard_before_tool_call
 from clawkeeper_core.guards.return_content_scan import return_content_scan_guard  # noqa: F401
 from clawkeeper_core.guards.script_body_scan import script_body_scan_guard
 from clawkeeper_core.guards.url_safety import url_safety_guard
-
+from clawkeeper_core.learned_rules import pin_snapshot
 
 # ── Per-session call history ───────────────────────────────────────────────
 
@@ -78,7 +78,38 @@ _PRE_TOOL_GUARDS = (
 )
 
 
+def classify_finding(decision: Any) -> str:  # noqa: PLR0911 -- explicit guard result categories
+    """Classify guard output without conflating a normal return with a hit."""
+    if decision is None:
+        return "clean"
+    if not isinstance(decision, dict) or not isinstance(decision.get("block"), bool):
+        return "error"
+    for field in ("outcome", "source", "severity", "reason", "matched"):
+        if field in decision and decision[field] is not None and not isinstance(decision[field], str):
+            return "error"
+    if "signals" in decision and not isinstance(decision["signals"], list):
+        return "error"
+    if "evidence" in decision and not isinstance(decision["evidence"], dict):
+        return "error"
+    if "error" in decision or str(decision.get("source", "")).endswith(":error"):
+        return "error"
+    if decision.get("outcome") not in (None, "allow", "ask", "deny"):
+        return "error"
+    if decision["block"]:
+        return "block"
+    if decision.get("outcome") in ("ask", "deny") or any(
+        decision.get(k) for k in ("matched", "signals", "evidence", "reason")
+    ):
+        return "finding"
+    return "clean"
+
+
 def gather_deterministic_findings(*, tool_name: str, args: dict | None) -> list[dict]:
+    with pin_snapshot():
+        return _gather_findings(tool_name=tool_name, args=args)
+
+
+def _gather_findings(*, tool_name: str, args: dict | None) -> list[dict]:
     """Run the deterministic pre-tool-call guards and return their findings.
 
     Findings are dicts in the standard guard-decision shape. Empty list = clean.
@@ -103,11 +134,27 @@ def gather_deterministic_findings(*, tool_name: str, args: dict | None) -> list[
         except Exception as e:  # noqa: BLE001 — guards must never crash the watcher
             d = {
                 "block": False,
-                "outcome": "allow",
+                "error": repr(e),
                 "source": f"{getattr(g, '__name__', '?')}:error",
                 "severity": "low",
                 "reason": f"guard error: {e!r}",
             }
-        if d is not None:
-            out.append(d)
+        kind = classify_finding(d)
+        if kind == "clean":
+            continue
+        if not isinstance(d, dict):
+            d = {"block": False, "error": "invalid guard return structure"}
+        else:
+            d = dict(d)
+        d.setdefault("source", getattr(g, "__name__", "unknown_guard"))
+        if kind == "error":
+            d.setdefault("error", "invalid guard return structure")
+            d["block"] = d.get("block") is True
+            for field in ("source", "severity", "reason"):
+                if not isinstance(d.get(field), str):
+                    d.pop(field, None)
+            d.setdefault("source", getattr(g, "__name__", "unknown_guard"))
+            d.setdefault("reason", "guard evaluation failed")
+        d["finding_kind"] = kind
+        out.append(d)
     return out

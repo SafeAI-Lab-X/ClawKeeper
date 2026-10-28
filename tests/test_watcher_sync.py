@@ -58,7 +58,7 @@ def test_client_conditional_sync_and_single_authority():
 
 @pytest.mark.parametrize(
     "failure",
-    ["version", "target", "regex", "broad", "duplicate", "validator", "disconnect", "bad304"],
+    ["version", "target", "regex", "broad", "duplicate", "validator", "old_validator", "previous_validator", "disconnect", "bad304"],
 )
 def test_invalid_sync_preserves_previous_snapshot(failure):
     body = payload()
@@ -82,6 +82,10 @@ def test_invalid_sync_preserves_previous_snapshot(failure):
             bad["rules"][0]["pattern"] = "[" if failure == "regex" else ".*"
         elif failure == "duplicate":
             bad["rules"].append(bad["rules"][0])
+        elif failure == "old_validator":
+            bad["validation_version"] = 2
+        elif failure == "previous_validator":
+            bad["validation_version"] = 3
         else:
             bad["validation_version"] = 999
         return response(bad)
@@ -98,9 +102,9 @@ def test_invalid_sync_preserves_previous_snapshot(failure):
 @pytest.mark.parametrize(
     "target,command",
     [
-        ("exec_gate", "echo CK_CANARY_8421"),
+        ("exec_gate", "CK_CANARY_8421"),
         ("path_guard", "cat /tmp/CK_CANARY_8421"),
-        ("script_body_scan", "print('CK_CANARY_8421')"),
+        ("script_body_scan", "CK_CANARY_8421"),
     ],
 )
 def test_shared_client_for_both_hermes_interceptors(monkeypatch, target, command):
@@ -212,7 +216,7 @@ def stop(proc):
                 stream.close()
 
 
-def ask_adapter(proc, action, command="echo CK_CANARY_8421"):
+def ask_adapter(proc, action, command="CK_CANARY_8421"):
     proc.stdin.write(json.dumps({"action": action, "command": command}) + "\n")
     proc.stdin.flush()
     ready, _, _ = select.select([proc.stdout], [], [], 15)
@@ -222,9 +226,20 @@ def ask_adapter(proc, action, command="echo CK_CANARY_8421"):
     return json.loads(line)
 
 
-def test_separate_process_learning_sync_restart_delete_and_disconnect(tmp_path):
+@pytest.mark.parametrize("legacy_record", [False, True])
+@pytest.mark.parametrize("command", ["CK_CANARY_8421", "python -m CK_CANARY_8421", "CK_FIELD_8421", "python -m CK_FIELD_8421"])
+def test_separate_process_learning_sync_restart_delete_and_disconnect(tmp_path, legacy_record, command):  # noqa: PLR0915 -- complete lifecycle across real processes
     server = adapter = None
     try:
+        if legacy_record:
+            from dataclasses import asdict
+
+            from tests.test_learned_rules import candidate
+
+            pattern = r"python\s+-m\s+CK_CANARY_\d+" if command.startswith("python") else r"CK_CANARY_\d+"
+            record = asdict(candidate(pattern=pattern, command="", source_texts=["echo " + command]))
+            record.pop("source_view_version")
+            (tmp_path / "learned.json").write_text(json.dumps([record]))
         server, url, port = start_server(tmp_path / "learned.json")
         adapter = subprocess.Popen(
             [sys.executable, "-m", "tests.watcher_process", "adapter", url],
@@ -241,7 +256,7 @@ def test_separate_process_learning_sync_restart_delete_and_disconnect(tmp_path):
                 json={
                     "session_id": "learn",
                     "tool_name": "terminal",
-                    "args": {"command": "echo CK_CANARY_8421"},
+                    "args": {"command": command},
                 },
             )
             assert result.status_code == 200 and result.json()["decision"] == "deny"
@@ -249,10 +264,13 @@ def test_separate_process_learning_sync_restart_delete_and_disconnect(tmp_path):
             snapshot = client.get("/watcher/rules").json()
             assert snapshot["pid"] == server.pid and snapshot["pid"] != adapter.pid
             assert snapshot["version"] != empty_version and len(snapshot["rules"]) == 1
-            synced = ask_adapter(adapter, "pre")
+            if "CK_FIELD" in command:
+                assert snapshot["rules"][0]["subject"] == ("python.module" if command.startswith("python") else "program.name")
+            synced = ask_adapter(adapter, "pre", command)
             assert "learned:exec_gate" in synced["result"]["message"]
             assert synced["version"] == snapshot["version"]
-            assert ask_adapter(adapter, "approval")["result"] == "deny"
+            assert ask_adapter(adapter, "approval", command)["result"] == "deny"
+            assert not ask_adapter(adapter, "inspect", "echo " + command)["result"]["block"]
             old_instance = snapshot["instance_id"]
         stop(server)
         server, url, _ = start_server(tmp_path / "learned.json", port)
@@ -260,11 +278,12 @@ def test_separate_process_learning_sync_restart_delete_and_disconnect(tmp_path):
             restored = client.get("/watcher/rules").json()
             assert restored["version"] == snapshot["version"]
             assert restored["instance_id"] != old_instance
-            assert "learned:exec_gate" in ask_adapter(adapter, "pre")["result"]["message"]
+            assert "learned:exec_gate" in ask_adapter(adapter, "pre", command)["result"]["message"]
+            assert not ask_adapter(adapter, "inspect", "echo " + command)["result"]["block"]
             assert client.delete("/watcher/learned/" + snapshot["rules"][0]["id"]).json()["removed"]
             refreshed = ask_adapter(adapter, "pre", "ls -la")
             assert refreshed["version"] == empty_version and refreshed["result"] is None
-            assert not ask_adapter(adapter, "inspect")["result"]["block"]
+            assert not ask_adapter(adapter, "inspect", command)["result"]["block"]
             # Restore a last-known rule, then disconnect. Failed synchronization
             # must retain that rule and stop an otherwise benign tool call.
             client.post(
@@ -272,15 +291,15 @@ def test_separate_process_learning_sync_restart_delete_and_disconnect(tmp_path):
                 json={
                     "session_id": "learn-again",
                     "tool_name": "terminal",
-                    "args": {"command": "echo CK_CANARY_8421"},
+                    "args": {"command": command},
                 },
             ).raise_for_status()
-            assert "learned:exec_gate" in ask_adapter(adapter, "pre")["result"]["message"]
+            assert "learned:exec_gate" in ask_adapter(adapter, "pre", command)["result"]["message"]
         stop(server)
         server = None
         assert ask_adapter(adapter, "pre", "ls -la")["result"]["action"] == "block"
         assert ask_adapter(adapter, "approval", "ls -la")["result"] == "deny"
-        assert ask_adapter(adapter, "inspect")["result"]["block"]
+        assert ask_adapter(adapter, "inspect", command)["result"]["block"]
     finally:
         stop(adapter)
         stop(server)

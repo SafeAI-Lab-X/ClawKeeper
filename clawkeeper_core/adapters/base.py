@@ -31,13 +31,15 @@ The decision dict shape (compatible with existing CK code):
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
+from clawkeeper_core.execution import analysis_scope
 from clawkeeper_core.learned_rules import pin_snapshot
 
 GuardEvent = dict[str, Any]
 GuardDecision = dict[str, Any]
-GuardCallable = Callable[[GuardEvent], Optional[GuardDecision]]
+GuardCallable = Callable[[GuardEvent], GuardDecision | None]
 
 
 def make_event(
@@ -79,7 +81,7 @@ def run_guard_chain(
 
     Returns ``(first_blocking_decision_or_None, all_decisions_emitted)``.
     """
-    with pin_snapshot():
+    with pin_snapshot(), analysis_scope():
         return _run_guard_chain(guards, event, stop_on_block=stop_on_block)
 
 
@@ -89,7 +91,7 @@ def _run_guard_chain(guards, event, *, stop_on_block):
     for guard in guards:
         try:
             d = guard(event)
-        except Exception as exc:  # noqa: BLE001 — guards must never crash the host
+        except Exception as exc:
             d = {
                 "block": False,
                 "outcome": "allow",

@@ -49,6 +49,14 @@ def test_worker_reused_across_matches_and_invalid_pattern(children):
     assert children[0].poll() is not None
 
 
+def test_invocation_mode_requires_start_and_complete_program_token(children):
+    groups = [["ver"], ["echo ver"], ["version-control"], ["ver --help"]]
+    assert regex.search_groups(["ver"], groups, invocation_start=True) == [0, None, None, 0]
+    # A warm worker must not retain a previous request's matching mode.
+    assert regex.search_groups(["ver"], groups) == [0, 0, 0, 0]
+    assert len(children) == 1
+
+
 def test_timeout_kills_warm_worker_and_next_request_has_no_stale_reply(children):
     assert regex.search_groups([r"CK_REUSE_(a+)+$"], [["CK_REUSE_aaa"]]) == [0]
     first = children[0]

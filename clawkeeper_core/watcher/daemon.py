@@ -197,6 +197,7 @@ def build_app(watcher: Watcher | None = None) -> FastAPI:  # noqa: PLR0915 -- ro
             raise HTTPException(status_code=503, detail="learned store unavailable") from exc
         return [{"pattern": scrub_sample(c.pattern) if isinstance(c.pattern, str) and len(c.pattern) <= MAX_PATTERN_CHARS else "[rejected]",
                  "guard_target": c.guard_target, "confidence": c.confidence,
+                 "subject": c.subject, "inactive_reason": c.inactive_reason,
                  "created_at": c.created_at, "source_command": "",
                  "source_args": None} for c in candidates]
 

@@ -20,9 +20,11 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from clawkeeper_core.bounded_regex import MAX_PATTERN_SET_CHARS, MAX_PATTERNS, search_groups
+from clawkeeper_core.command_facts import FACT_VERSION, SUBJECTS
+from clawkeeper_core.execution import analysis_scope
 
-PROTOCOL_VERSION = 1
-VALIDATION_VERSION = 2
+PROTOCOL_VERSION = 2
+VALIDATION_VERSION = 5
 TARGETS = frozenset({"exec_gate", "path_guard", "script_body_scan"})
 INSTANCE_ID = str(uuid.uuid4())
 _LOG = logging.getLogger(__name__)
@@ -110,8 +112,30 @@ def audit_context(**fields: Any):
         _audit_fields.reset(token)
 
 
-def rule_id(target: str, pattern: str) -> str:
-    return hashlib.sha256(f"{target}\0{pattern}".encode()).hexdigest()
+def default_subject(target: str) -> str:
+    return "path" if target == "path_guard" else "invocation"
+
+
+def rule_id(target: str, pattern: str, subject: str | None = None) -> str:
+    # Preserve historical identities for the compatibility projection. New
+    # subjects are distinct rules even when their regex and guard are equal.
+    key = f"{target}\0{pattern}" if subject in (None, default_subject(target)) else f"{target}\0{subject}\0{pattern}"
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
+def subject_mode(subject: str) -> str:
+    if subject == "invocation":
+        return "invocation"
+    return "search" if subject in {"path", "script.path"} else "full"
+
+
+def checked_subject(target: str, subject: str | None) -> str:
+    subject = default_subject(target) if subject is None else subject
+    if not isinstance(subject, str) or subject not in SUBJECTS:
+        raise ValueError("unsupported rule subject")
+    if (target == "path_guard") != (subject == "path") or (subject == "python.operation" and target != "script_body_scan"):
+        raise ValueError("subject does not belong to target guard")
+    return subject
 
 
 @dataclass(frozen=True)
@@ -119,9 +143,11 @@ class LearnedRule:
     id: str
     guard_target: str
     pattern: str
+    subject: str = "invocation"
 
     def as_dict(self) -> dict:
-        return {"id": self.id, "guard_target": self.guard_target, "pattern": self.pattern}
+        return {"id": self.id, "guard_target": self.guard_target, "pattern": self.pattern,
+                "subject": self.subject, "subject_version": FACT_VERSION}
 
 
 @dataclass(frozen=True)
@@ -211,16 +237,17 @@ def install_snapshot(snapshot: RuleSnapshot, *, authority: str | None = None) ->
     return added
 
 
-def target_texts(target: str, event: dict) -> list[str]:
+def target_texts(target: str, event: dict, subject: str | None = None) -> list[str]:
     """The exact same target view is used in validation and enforcement."""
+    subject = checked_subject(target, subject)
     params = event.get("params") or {}
-    if target == "exec_gate":
-        from clawkeeper_core.guards.exec_gate import extract_command_text  # noqa: PLC0415 -- guards use this module
+    if target in {"exec_gate", "script_body_scan"}:
+        from clawkeeper_core.guards.exec_gate import execution_contexts  # noqa: PLC0415 -- guards use this module
 
-        return [extract_command_text(event.get("toolName"), params)]
-    if target == "script_body_scan":
-        command = params.get("command", "")
-        return [command] if isinstance(command, str) else []
+        contexts = execution_contexts(event)
+        if any(c.errors for c in contexts):
+            raise ValueError("execution context analysis incomplete")
+        return [v for c in contexts for v in c.values(subject, script=target == "script_body_scan")]
     if target == "path_guard":
         from clawkeeper_core.guards.path_guard import extract_paths_from_params, normalize_path  # noqa: PLC0415
 
@@ -232,30 +259,34 @@ def target_texts(target: str, event: dict) -> list[str]:
     raise ValueError(f"unsupported guard target: {target!r}")
 
 
+@analysis_scope()
 def validate_rule(
     pattern: str,
     target: str,
     *,
     source_event: dict | None = None,
     source_texts: list[str] | None = None,
+    subject: str | None = None,
 ) -> LearnedRule:
     if not isinstance(target, str) or target not in TARGETS:
         raise ValueError("unsupported guard target")
     if not isinstance(pattern, str) or not pattern:
         raise ValueError("pattern must be a nonempty string")
+    subject = checked_subject(target, subject)
     events = [{"toolName": "terminal", "params": {"command": c}} for c in BENIGN_COMMANDS]
     events.extend({"toolName": "read_file", "params": {"path": p}} for p in _BENIGN_PATHS)
-    benign = [text for e in events for text in target_texts(target, e)]
-    source = target_texts(target, source_event) if source_event is not None else source_texts
+    benign = [text for e in events for text in target_texts(target, e, subject)]
+    source = target_texts(target, source_event, subject) if source_event is not None else source_texts
     groups = [source, benign] if source is not None else [benign]
-    matches = search_groups([pattern], groups)
+    matches = search_groups([pattern], groups, modes=[subject_mode(subject)])
     if source is not None and matches[0] is None:
         raise ValueError("pattern does not match the source in its target guard")
     if matches[-1] is not None:
         raise ValueError("pattern matches a benign programming task")
-    return LearnedRule(rule_id(target, pattern), target, pattern)
+    return LearnedRule(rule_id(target, pattern, subject), target, pattern, subject)
 
 
+@analysis_scope()
 def snapshot_from_wire(payload: dict) -> RuleSnapshot:
     """Reject the entire response on any invalid rule; never partially apply."""
     if (
@@ -282,7 +313,9 @@ def snapshot_from_wire(payload: dict) -> RuleSnapshot:
             raise ValueError("rules validation budget exhausted")
         if not isinstance(item, dict):
             raise ValueError("invalid rule entry")
-        rule = validate_rule(item.get("pattern"), item.get("guard_target"))
+        if type(item.get("subject_version")) is not int or item["subject_version"] != FACT_VERSION or not isinstance(item.get("subject"), str):
+            raise ValueError("incompatible rule subject schema")
+        rule = validate_rule(item.get("pattern"), item.get("guard_target"), subject=item["subject"])
         if item.get("id") != rule.id:
             raise ValueError("rule identity mismatch")
         rules.append(rule)
@@ -292,6 +325,7 @@ def snapshot_from_wire(payload: dict) -> RuleSnapshot:
     return snapshot
 
 
+@analysis_scope()
 def match_learned(target: str, event: dict) -> dict | None:
     snapshot = _pinned.get() or _snapshot
     rules = [r for r in snapshot.rules if r.guard_target == target]
@@ -300,7 +334,12 @@ def match_learned(target: str, event: dict) -> dict | None:
     try:
         if policy_error():
             raise ValueError("learned policy unavailable")
-        matched = search_groups([r.pattern for r in rules], [target_texts(target, event)])[0]
+        subjects = list(dict.fromkeys(r.subject for r in rules))
+        groups = [target_texts(target, event, subject) for subject in subjects]
+        matches = search_groups([r.pattern for r in rules], groups,
+                                modes=[subject_mode(r.subject) for r in rules],
+                                pattern_groups=[subjects.index(r.subject) for r in rules])
+        matched = min((index for index in matches if index is not None), default=None)
     except Exception as exc:
         audit(
             "match_failed",
@@ -328,5 +367,5 @@ def match_learned(target: str, event: dict) -> dict | None:
         "source": f"learned:{target}",
         "matched": rule.id,
         "reason": f"Matches a validated learned {target} rule",
-        "evidence": {"rule_id": rule.id, "rules_version": snapshot.version},
+        "evidence": {"rule_id": rule.id, "rules_version": snapshot.version, "subject": rule.subject, "subject_version": FACT_VERSION},
     }

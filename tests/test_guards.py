@@ -37,9 +37,12 @@ class TestExecGate:
         text = exec_gate.extract_command_text("bash", {"command": "echo hi"})
         assert text == "echo hi"
 
-    def test_falls_back_to_all_strings_for_unknown_tools(self):
+    def test_legacy_display_helper_keeps_generic_strings(self):
         text = exec_gate.extract_command_text("custom", {"foo": "rm -rf /", "n": 1})
         assert "rm -rf /" in text
+
+    def test_unknown_metadata_is_not_a_builtin_execution_request(self):
+        assert exec_gate.extract_execution_requests("custom", {"foo": "rm -rf /"}) == []
 
 
 # ── path_guard ───────────────────────────────────────────────────────────

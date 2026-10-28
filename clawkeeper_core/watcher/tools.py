@@ -105,7 +105,9 @@ def classify_finding(decision: Any) -> str:  # noqa: PLR0911 -- explicit guard r
 
 
 def gather_deterministic_findings(*, tool_name: str, args: dict | None) -> list[dict]:
-    with pin_snapshot():
+    from clawkeeper_core.execution import analysis_scope  # noqa: PLC0415
+
+    with pin_snapshot(), analysis_scope():
         return _gather_findings(tool_name=tool_name, args=args)
 
 
@@ -131,7 +133,7 @@ def _gather_findings(*, tool_name: str, args: dict | None) -> list[dict]:
     for g in _PRE_TOOL_GUARDS:
         try:
             d = g(event)
-        except Exception as e:  # noqa: BLE001 — guards must never crash the watcher
+        except Exception as e:
             d = {
                 "block": False,
                 "error": repr(e),

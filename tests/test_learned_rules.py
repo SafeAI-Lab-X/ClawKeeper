@@ -22,7 +22,7 @@ from clawkeeper_core.watcher.learner import PatternCandidate, synthesize_pattern
 pytestmark = pytest.mark.usefixtures("isolated_learning")
 
 
-def candidate(target="exec_gate", pattern=r"CK_CANARY_\d+", command="echo CK_CANARY_8421", **kw):
+def candidate(target="exec_gate", pattern=r"CK_CANARY_\d+", command="CK_CANARY_8421", **kw):
     return PatternCandidate(pattern, command, target, 0.99, "2026-10-27T00:00:00Z", **kw)
 
 
@@ -131,7 +131,7 @@ def test_learning_exception_preserves_verdict(monkeypatch, caplog):
         (
             "exec_gate",
             guard_execution,
-            make_event(tool_name="terminal", command="echo CK_CANARY_8421"),
+            make_event(tool_name="terminal", command="CK_CANARY_8421"),
         ),
         (
             "path_guard",
@@ -141,7 +141,7 @@ def test_learning_exception_preserves_verdict(monkeypatch, caplog):
         (
             "script_body_scan",
             script_body_scan_guard,
-            make_event(tool_name="terminal", command="print('CK_CANARY_8421')"),
+            make_event(tool_name="terminal", command="CK_CANARY_8421"),
         ),
     ],
 )
@@ -170,11 +170,11 @@ def test_targets_match_and_revoke(isolated_learning, target, guard, event):
 def test_target_routes_do_not_leak():
     rule = rules.validate_rule(r"CK_CANARY_\d+", "path_guard")
     rules.install_snapshot(rules.make_snapshot([rule]))
-    assert not guard_execution(make_event(tool_name="terminal", command="echo CK_CANARY_8421"))[
+    assert not guard_execution(make_event(tool_name="terminal", command="CK_CANARY_8421"))[
         "block"
     ]
     assert (
-        script_body_scan_guard(make_event(tool_name="terminal", command="print('CK_CANARY_8421')"))
+        script_body_scan_guard(make_event(tool_name="terminal", command="CK_CANARY_8421"))
         is None
     )
     assert guard_before_tool_call(
@@ -206,7 +206,7 @@ def test_snapshot_pinned_across_guard_chain():
 
     blocked, _ = run_guard_chain(
         [reload_between_guards, guard_execution],
-        make_event(tool_name="terminal", command="echo CK_CANARY_8421"),
+        make_event(tool_name="terminal", command="CK_CANARY_8421"),
     )
     assert blocked["evidence"]["rules_version"] == snapshot.version
     assert not rules.current_snapshot().rules
@@ -227,7 +227,11 @@ def test_snapshot_pinned_across_guard_chain():
 )
 def test_rejects_invalid_or_benign_matching_rules(pattern, target):
     with pytest.raises(ValueError):
-        rules.validate_rule(pattern, target)
+        if target == "script_body_scan":
+            rules.validate_rule(pattern, target, source_event=make_event(
+                tool_name="terminal", command="python -c 'print(\".aws\")'"))
+        else:
+            rules.validate_rule(pattern, target)
 
 
 def test_candidate_must_match_source_and_dedup_includes_target(isolated_learning):
@@ -256,7 +260,7 @@ def test_wire_version_validated_and_private_sample_excluded():
     rule = rules.validate_rule(r"CK_CANARY_\d+", "exec_gate")
     payload = rules.make_snapshot([rule]).as_dict()
     assert rules.snapshot_from_wire(payload).rules == (rule,)
-    assert set(payload["rules"][0]) == {"id", "guard_target", "pattern"}
+    assert set(payload["rules"][0]) == {"id", "guard_target", "pattern", "subject", "subject_version"}
     payload["rules"][0]["pattern"] = "different"
     with pytest.raises(ValueError):
         rules.snapshot_from_wire(payload)
@@ -270,26 +274,32 @@ def test_synthesis_unknown_target_rejected():
             )
         )
     )
-    assert synthesize_pattern("echo CK_CANARY", "test", model) is None
+    assert synthesize_pattern("CK_CANARY", "test", model) is None
 
 
-def test_full_learning_loop(isolated_learning, caplog):
+@pytest.mark.parametrize("command,variant,pattern", [
+    ("CK_CANARY_8421", "CK_CANARY_9988", r"CK_CANARY_\d+"),
+    ("python -m CK_CANARY_8421", "python -m CK_CANARY_9988", r"python\s+-m\s+CK_CANARY_\d+"),
+    ("node /tmp/CK_CANARY_8421.js", "node /tmp/CK_CANARY_9988.js", r"node\s+/tmp/CK_CANARY_\d+\.js"),
+])
+def test_full_learning_loop(isolated_learning, caplog, command, variant, pattern):
     caplog.set_level(logging.INFO)
     model = model_with()
     model.side_effect = [
         model.return_value,
         SimpleNamespace(
             content=json.dumps(
-                {"pattern": r"CK_CANARY_\d+", "guard_target": "exec_gate", "confidence": 0.99}
+                {"pattern": pattern, "guard_target": "exec_gate", "confidence": 0.99}
             )
         ),
     ]
     result = agent.Watcher(model=model).evaluate(
-        session_id="loop", tool_name="terminal", args={"command": "echo CK_CANARY_8421"}
+        session_id="loop", tool_name="terminal", args={"command": command}
     )
     assert result.decision == "deny" and not result.deterministic_findings
     assert len(isolated_learning.all()) == 1 and model.call_count == 2
-    assert guard_execution(make_event(tool_name="terminal", command="echo CK_CANARY_9988"))["block"]
+    assert guard_execution(make_event(tool_name="terminal", command=variant))["source"] == "learned:exec_gate"
+    assert guard_execution(make_event(tool_name="terminal", command="echo " + variant)) == {"block": False}
     stages = [getattr(r, "stage", "") for r in caplog.records]
     assert stages.index("validated") < stages.index("stored") < stages.index("applied")
 

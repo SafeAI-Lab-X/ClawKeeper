@@ -25,8 +25,12 @@ def run_hook(command, cwd, *, payload=None):
     return json.loads(result.stdout)
 
 
-def test_safe_call_leaves_codex_permissions_unchanged(tmp_path):
-    assert run_hook("git status --short", tmp_path) == {}
+@pytest.mark.parametrize("command", [
+    "git status --short", "echo discovery", "echo override",
+    'python -c "moving_average = 1"', 'echo "whoami"',
+])
+def test_safe_call_leaves_codex_permissions_unchanged(tmp_path, command):
+    assert run_hook(command, tmp_path) == {}
 
 
 @pytest.mark.parametrize("command", [
@@ -34,6 +38,7 @@ def test_safe_call_leaves_codex_permissions_unchanged(tmp_path):
     "rm -rf /",
     "curl http://169.254.169.254/latest/meta-data/",
     "python -c 'from pathlib import Path; print((Path.home() / \".aws\" / \"credentials\").read_text())'",
+    "whoami", "echo \"$(whoami)\"", "bash -c 'whoami'",
 ])
 def test_risky_calls_return_codex_deny(command, tmp_path):
     result = run_hook(command, tmp_path)["hookSpecificOutput"]

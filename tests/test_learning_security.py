@@ -38,7 +38,7 @@ def test_redos_is_bounded_and_child_is_reaped(monkeypatch):
     rule = rules.validate_rule(
         r"CK_REVIEW_(a+)+$",
         "exec_gate",
-        source_event={"toolName": "terminal", "params": {"command": "echo CK_REVIEW_aaa"}},
+        source_event={"toolName": "terminal", "params": {"command": "CK_REVIEW_aaa"}},
     )
     rules.install_snapshot(rules.make_snapshot([rule]))
     bounded_regex._close_workers()
@@ -53,14 +53,14 @@ def test_redos_is_bounded_and_child_is_reaped(monkeypatch):
     monkeypatch.setattr(subprocess, "Popen", track)
     started = time.monotonic()
     result = guard_execution(
-        make_event(tool_name="terminal", command="echo CK_REVIEW_" + "a" * 32 + "!")
+        make_event(tool_name="terminal", command="CK_REVIEW_" + "a" * 32 + "!")
     )
     assert time.monotonic() - started < 2
     assert result["block"] and result["outcome"] == "ask" and result["error"]
     assert children and all(child.poll() is not None for child in children)
     # A timed-out call must not permanently disable the rule or leak a slot.
     assert (
-        guard_execution(make_event(tool_name="terminal", command="echo CK_REVIEW_aaa"))["matched"]
+        guard_execution(make_event(tool_name="terminal", command="CK_REVIEW_aaa"))["matched"]
         == rule.id
     )
 
@@ -120,7 +120,7 @@ def test_transient_reload_failure_keeps_whole_snapshot_and_recovers(
     assert isolated_learning.add(candidate())
     with TestClient(daemon.build_app(watcher=fake_watcher())) as client:
         previous = rules.current_snapshot()
-        assert isolated_learning.add(candidate(pattern="CK_OTHER", command="echo CK_OTHER"))
+        assert isolated_learning.add(candidate(pattern="CK_OTHER", command="CK_OTHER"))
         saved = isolated_learning._path.read_bytes()
         real_execute = bounded_regex._execute
 
@@ -156,7 +156,7 @@ def test_transient_reload_failure_keeps_whole_snapshot_and_recovers(
         assert client.post("/watcher/rules/reload").status_code == 200
         assert client.get("/watcher/health").json()["status"] == "ok"
         assert len(rules.current_snapshot().rules) == 2
-        for command in ("echo CK_CANARY_8421", "echo CK_OTHER"):
+        for command in ("CK_CANARY_8421", "CK_OTHER"):
             assert guard_execution(make_event(tool_name="terminal", command=command))["matched"]
         assert not guard_execution(make_event(tool_name="terminal", command="ls -la"))["block"]
 
@@ -168,7 +168,7 @@ def test_malformed_stored_regex_is_rejected_without_degrading_valid_policy(isola
     assert rules.policy_error() is None
     assert len(rules.current_snapshot().rules) == 1
     assert len(isolated_learning.all()) == 2
-    assert guard_execution(make_event(tool_name="terminal", command="echo CK_CANARY_8421"))["matched"]
+    assert guard_execution(make_event(tool_name="terminal", command="CK_CANARY_8421"))["matched"]
 
 
 def test_windows_one_shot_fallback_still_matches_and_reports_timeout(monkeypatch):
@@ -185,8 +185,8 @@ def test_windows_one_shot_fallback_still_matches_and_reports_timeout(monkeypatch
 @pytest.mark.parametrize(
     "target,tool,params,guard",
     [
-        ("exec_gate", "custom_tool", {"payload": "echo CK_CANARY_8421"}, guard_execution),
-        ("exec_gate", "custom_tool", {"request": [{"payload": "echo CK_CANARY_8421"}]}, guard_execution),
+        ("exec_gate", "custom_tool", {"payload": "CK_CANARY_8421"}, guard_execution),
+        ("exec_gate", "custom_tool", {"request": [{"payload": "CK_CANARY_8421"}]}, guard_execution),
         ("path_guard", "read_file", {"location": "/tmp/CK_CANARY_8421"}, guard_before_tool_call),
         ("path_guard", "read_file", {"request": [{"location": "/tmp/CK_CANARY_8421"}]}, guard_before_tool_call),
     ],
@@ -208,7 +208,7 @@ def test_generic_and_nested_samples_survive_learning_and_migration(
     assert guard(event)["matched"] == rule.id
     record = isolated_learning.all()[0]
     assert record.source_args is None and record.source_command == ""
-    assert any("CK_CANARY_8421" in text for text in record.source_texts)
+    assert any("ck_canary_8421" in text.lower() for text in record.source_texts)
     saved = isolated_learning._path.read_text()
     assert "FAKE_NESTED_SECRET_7319" not in saved and "FAKE_HEADER_SECRET_4928" not in saved
     assert reload.apply_learned_patterns() == 0
@@ -227,7 +227,7 @@ def test_generic_nested_arguments_reach_synthesis_without_credentials(isolated_l
         prompts.append(messages)
         return SimpleNamespace(content=json.dumps(next(responses)))
 
-    params = {"request": [{"payload": "echo CK_CANARY_8421",
+    params = {"request": [{"payload": "CK_CANARY_8421",
                            "password": "FAKE_SYNTHESIS_SECRET_6123",
                            "client_secret": "FAKE_CLIENT_SECRET_3128",
                            "OPENAI_API_KEY": "FAKE_PROVIDER_KEY_7639",
@@ -236,7 +236,7 @@ def test_generic_nested_arguments_reach_synthesis_without_credentials(isolated_l
         session_id="generic", tool_name="custom_tool", args=params
     )
     assert result.decision == "deny" and len(prompts) == 2
-    assert "echo CK_CANARY_8421" in json.dumps(prompts[1])
+    assert "CK_CANARY_8421" in json.dumps(prompts[1])
     for secret in ("FAKE_SYNTHESIS_SECRET_6123", "FAKE_CLIENT_SECRET_3128",
                    "FAKE_PROVIDER_KEY_7639", "FAKE_AUTH_TOKEN_8914"):
         assert secret not in json.dumps(prompts[1])
@@ -270,7 +270,7 @@ def test_credentials_not_in_model_synthesis_store_or_list(isolated_learning):
         session_id="privacy",
         tool_name="terminal",
         args={
-            "command": "echo CK_CANARY_8421",
+            "command": "CK_CANARY_8421",
             "env": {"API_KEY": secrets[0]},
             "headers": {"Authorization": secrets[1]},
             "body": {"password": secrets[2]},
@@ -289,17 +289,17 @@ def test_credentials_not_in_model_synthesis_store_or_list(isolated_learning):
     assert data["source_args"] is None and data["source_command"] == ""
     assert "source_texts" not in data
     saved = isolated_learning.all()[0]
-    assert saved.source_texts == ["echo CK_CANARY_8421"]
+    assert saved.source_texts == ["ck_canary_8421"]
     assert not isolated_learning._path.stat().st_mode & 0o077
 
 
 @pytest.mark.parametrize(
     "source,secret",
     [
-        ("echo CK_CANARY_8421; API_KEY='short'", "short"),
-        ('echo CK_CANARY_8421; print({"password": "short"})', "short"),
-        ("echo CK_CANARY_8421\nAuthorization: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz"),
-        ("echo CK_CANARY_8421 https://user:pass@example.com/", "user:pass"),
+        ("CK_CANARY_8421; API_KEY='short'", "short"),
+        ('''CK_CANARY_8421; printf '%s' '{"password": "short"}' ''', "short"),
+        ("CK_CANARY_8421\nAuthorization: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz"),
+        ("CK_CANARY_8421 https://user:pass@example.com/", "user:pass"),
     ],
 )
 def test_inline_and_legacy_credentials_are_scrubbed(isolated_learning, source, secret):
@@ -314,14 +314,14 @@ def test_inline_and_legacy_credentials_are_scrubbed(isolated_learning, source, s
     saved = isolated_learning._path.read_text()
     assert secret not in saved and "FAKE_LEGACY_SECRET" not in saved
     assert reload.apply_learned_patterns() == 0
-    assert guard_execution(make_event(tool_name="terminal", command="echo CK_CANARY_8421"))["block"]
+    assert guard_execution(make_event(tool_name="terminal", command="CK_CANARY_8421"))["block"]
 
 
 def test_rule_cannot_depend_on_redacted_secret(isolated_learning):
     c = candidate(
         pattern="FAKE_PRIVATE_SECRET",
-        command="echo CK_CANARY_8421",
-        source_args={"command": "echo CK_CANARY_8421", "env": {"API_KEY": "FAKE_PRIVATE_SECRET"}},
+        command="CK_CANARY_8421",
+        source_args={"command": "CK_CANARY_8421", "env": {"API_KEY": "FAKE_PRIVATE_SECRET"}},
     )
     assert not isolated_learning.add(c)
     assert not isolated_learning._path.exists()
@@ -348,7 +348,7 @@ def test_corrupt_store_boots_degraded_retains_policy_and_recovers(isolated_learn
         assert guard_execution(make_event(tool_name="terminal", command="ls -la"))["block"]
         # Failed writes/deletes must not overwrite the damaged evidence.
         with pytest.raises(learner.StoreUnavailableError):
-            isolated_learning.add(candidate(pattern="CK_OTHER", command="echo CK_OTHER"))
+            isolated_learning.add(candidate(pattern="CK_OTHER", command="CK_OTHER"))
         assert isolated_learning._path.read_bytes() == raw
         isolated_learning._path.write_text("[]")
         assert client.post("/watcher/rules/reload").status_code == 200
@@ -443,7 +443,7 @@ def test_store_capacity_rejection_retains_readable_previous_policy(isolated_lear
     previous = rules.current_snapshot()
     saved = isolated_learning._path.read_bytes()
     monkeypatch.setattr(learner, "_MAX_STORE_BYTES", len(saved) + 10)
-    assert not isolated_learning.add(candidate(pattern="CK_OTHER", command="echo CK_OTHER"))
+    assert not isolated_learning.add(candidate(pattern="CK_OTHER", command="CK_OTHER"))
     assert isolated_learning._path.read_bytes() == saved
     assert reload.apply_learned_patterns() == 0
     assert rules.current_snapshot().version == previous.version and rules.policy_error() is None

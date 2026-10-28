@@ -124,68 +124,77 @@ CREDENTIAL_LEAK_PATTERNS: list[re.Pattern[str]] = [
 # ── Dangerous command patterns ─────────────────────────────────────────────
 
 
+COMMAND_EXECUTABLES: dict[str, frozenset[str]] = {}
+
+
+def _command(pattern: str, *executables: str) -> re.Pattern[str]:
+    """Bind a pattern to visible program calls, never arbitrary argument text."""
+    COMMAND_EXECUTABLES[pattern] = frozenset(executables)
+    return _r(pattern)
+
+
 DANGEROUS_COMMAND_PATTERNS: list[re.Pattern[str]] = [
     # Linux/macOS bulk deletion
-    _r(r"rm\s+-r?f?\s+(?:\/|~|\$HOME)"),
-    _r(r"rm\s+-rf\s+\*\s*$"),
-    _r(r"rmdir\s+-p"),
+    _command(r"rm\s+(?:(?:-[rRf]+|--recursive|--force)\s+)+(?:--\s+)?(?:\/|~|\$HOME)", "rm"),
+    _command(r"rm\s+-(?:rf|fr)\s+\*\s*$", "rm"),
+    _command(r"rmdir\s+-p", "rmdir"),
     # Windows bulk deletion
-    _r(r"rmdir\s+\/s\s+\/q\s+(?:C:\\|%SYSTEMROOT%|%USERPROFILE%|\*)"),
-    _r(r"del\s+\/s\s+\/q\s+(?:C:\\|%SYSTEMROOT%|%USERPROFILE%|\*)"),
-    _r(r"Remove-Item\s+.*-Recurse\s+.*-Force"),
-    _r(r"\$null\s*=\s*Remove-Item\s+(?:C:\\|%SYSTEMROOT%)"),
+    _command(r"rmdir\s+\/s\s+\/q\s+(?:C:\\|%SYSTEMROOT%|%USERPROFILE%|\*)", "rmdir"),
+    _command(r"del\s+\/s\s+\/q\s+(?:C:\\|%SYSTEMROOT%|%USERPROFILE%|\*)", "del"),
+    _command(r"Remove-Item\s+.*-Recurse\s+.*-Force", "remove-item"),
+    _command(r"\$null\s*=\s*Remove-Item\s+(?:C:\\|%SYSTEMROOT%)", "remove-item"),
     # Linux/macOS priv escalation
-    _r(r"sudo\s+(?:su|bash|sh|chmod\s+777|chown\s+-R\s+root)"),
-    _r(r"chmod\s+(?:777|a\+rwx|u\+s)\s+\/"),
-    _r(r"chown\s+-R\s+(?:0:0|root:root)"),
-    _r(r"chmod\s+u\+s\s+\/(?:bin|usr)"),
+    _command(r"sudo\s+(?:su|bash|sh|chmod\s+777|chown\s+-R\s+root)", "sudo"),
+    _command(r"chmod\s+(?:777|a\+rwx|u\+s)\s+\/", "chmod"),
+    _command(r"chown\s+-R\s+(?:0:0|root:root)", "chown"),
+    _command(r"chmod\s+u\+s\s+\/(?:bin|usr)", "chmod"),
     # Windows priv escalation
-    _r(r"icacls\s+(?:C:\\|%SYSTEMROOT%)\s+.*\/grant|\/deny"),
-    _r(r"takeown\s+\/f\s+(?:C:\\|%SYSTEMROOT%)"),
-    _r(r"net\s+(?:user|localgroup|admin)\s+.*\/add"),
-    _r(r"Set-ExecutionPolicy\s+(?:Unrestricted|Bypass)"),
+    _command(r"icacls\s+(?:C:\\|%SYSTEMROOT%)\s+.*\/grant|\/deny", "icacls"),
+    _command(r"takeown\s+\/f\s+(?:C:\\|%SYSTEMROOT%)", "takeown"),
+    _command(r"net\s+(?:user|localgroup|admin)\s+.*\/add", "net"),
+    _command(r"Set-ExecutionPolicy\s+(?:Unrestricted|Bypass)", "set-executionpolicy"),
     # Linux/macOS credential collection
-    _r(r"cat\s+(?:\/etc\/(?:passwd|shadow|sudoers)|~\/\.ssh\/id_|~\/\.aws\/)"),
-    _r(r"grep\s+.*(?:password|key|secret|token|api)"),
-    _r(r"find\s+\/\s+(?:-name|.*)\s+(?:\.ssh|\.aws|\.config)"),
+    _command(r"cat\s+(?:\/etc\/(?:passwd|shadow|sudoers)|~\/\.ssh\/id_|~\/\.aws\/)", "cat"),
+    _command(r"grep\s+.*(?:password|key|secret|token|api)", "grep"),
+    _command(r"find\s+\/\s+(?:-name|.*)\s+(?:\.ssh|\.aws|\.config)", "find"),
     # Windows credential collection
-    _r(r"type\s+(?:C:\\|%USERPROFILE%\\).*(?:\.ssh|\.aws|credentials|config)"),
-    _r(r"reg\s+query\s+(?:HKLM|HKCU).*(?:Password|Secret|Token|Credential)"),
-    _r(r"Get-ChildItem\s+.*-Path\s+(?:C:\\|%USERPROFILE%)\s+.*Recurse"),
-    _r(r"net\s+(?:user|accounts)\s+\/domain"),
-    _r(r"ver(?:sion)?|systeminfo|whoami"),
+    _command(r"type\s+(?:C:\\|%USERPROFILE%\\).*(?:\.ssh|\.aws|credentials|config)", "type"),
+    _command(r"reg\s+query\s+(?:HKLM|HKCU).*(?:Password|Secret|Token|Credential)", "reg"),
+    _command(r"Get-ChildItem\s+.*-Path\s+(?:C:\\|%USERPROFILE%)\s+.*Recurse", "get-childitem"),
+    _command(r"net\s+(?:user|accounts)\s+\/domain", "net"),
+    _command(r"(?:ver(?:sion)?|systeminfo|whoami)(?=\s|$)", "ver", "version", "systeminfo", "whoami"),
     # macOS-specific
-    _r(r"pmset\s+(?:hibernatemode|sleepimage|standby)"),
-    _r(r"diskutil\s+(?:secureErase|eraseVolume|unmountDisk)"),
-    _r(r"launchctl\s+(?:unload|disable).*\/Library\/"),
+    _command(r"pmset\s+(?:hibernatemode|sleepimage|standby)", "pmset"),
+    _command(r"diskutil\s+(?:secureErase|eraseVolume|unmountDisk)", "diskutil"),
+    _command(r"launchctl\s+(?:unload|disable).*\/Library\/", "launchctl"),
     # Network exfil / reverse shell
-    _r(r"(?:curl|wget|nc|ncat)\s+.*\|\s*(?:bash|sh|python|node|powershell)"),
-    _r(r"(?:curl|wget)\s+.*-o\s+(?:\/tmp|\/dev|%TEMP%|%AppData%)"),
-    _r(r"\|\s*IEX\s*\("),
-    _r(r"DownloadFile.*ExecutionPolicy"),
+    _command(r"(?:curl|wget|nc|ncat)\s+.*\|\s*(?:bash|sh|python|node|powershell)", "curl", "wget", "nc", "ncat"),
+    _command(r"(?:curl|wget)\s+.*-o\s+(?:\/tmp|\/dev|%TEMP%|%AppData%)", "curl", "wget"),
+    _command(r"\|\s*IEX\s*\(", "iex"),
+    _command(r"DownloadFile.*ExecutionPolicy", "powershell", "pwsh"),
     # Disk wipe
-    _r(r"dd\s+if=\/dev\/(?:zero|random|urandom)\s+of=\/dev\/(?:sd|hd|nvme)"),
-    _r(r"mkfs(?:\..*)?[\s.]"),
-    _r(r"format\s+[A-Z]:\s*\/\w"),
-    _r(r"cipher\s+\/w:"),
-    _r(r"shred\s+-(?:vfz|u)\s+\/"),
+    _command(r"dd\s+if=\/dev\/(?:zero|random|urandom)\s+of=\/dev\/(?:sd|hd|nvme)", "dd"),
+    _command(r"mkfs(?:\..*)?[\s.]", "mkfs"),
+    _command(r"format\s+[A-Z]:\s*\/\w", "format"),
+    _command(r"cipher\s+\/w:", "cipher"),
+    _command(r"shred\s+-(?:vfz|u)\s+\/", "shred"),
     # Process control
-    _r(r"fork\s*\(\s*\)\s*&&\s*fork"),
-    re.compile(r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;"),
-    _r(r"taskkill\s+\/f\s+\/im\s+(?:explorer|svchost|csrss)"),
-    _r(r"Stop-Process\s+-Name\s+(?:explorer|csrss|winlogon)"),
-    _r(r"kill\s+-9\s+(?:1|init|systemd|launchd)"),
-    _r(r"killall\s+(?:1|init|systemd|launchd|-9)"),
+    _command(r"fork\s*\(\s*\)\s*&&\s*fork", "fork"),
+    _command(r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;?", ":"),
+    _command(r"taskkill\s+\/f\s+\/im\s+(?:explorer|svchost|csrss)", "taskkill"),
+    _command(r"Stop-Process\s+-Name\s+(?:explorer|csrss|winlogon)", "stop-process"),
+    _command(r"kill\s+-9\s+(?:1|init|systemd|launchd)", "kill"),
+    _command(r"killall\s+(?:1|init|systemd|launchd|-9)", "killall"),
     # Firewall / network
-    _r(r"netsh\s+(?:advfirewall|firewall)\s+set"),
-    _r(r"iptables\s+(?:-I|-A)\s+(?:INPUT|FORWARD|OUTPUT)"),
-    _r(r"ufw\s+(?:disable|reset)"),
-    _r(r"ipfw\s+flush"),
+    _command(r"netsh\s+(?:advfirewall|firewall)\s+set", "netsh"),
+    _command(r"iptables\s+(?:-I|-A)\s+(?:INPUT|FORWARD|OUTPUT)", "iptables"),
+    _command(r"ufw\s+(?:disable|reset)", "ufw"),
+    _command(r"ipfw\s+flush", "ipfw"),
     # Log clearing
-    _r(r"rm\s+-f\s+\/var\/log\/"),
-    _r(r"cat\s+\/dev\/null\s*>\s*\/var\/log\/"),
-    _r(r"Get-EventLog\s+-LogName\s+\*\s*\|\s*Remove-EventLog"),
-    _r(r"wevtutil\s+cl\s+(?:System|Security|Application)"),
+    _command(r"rm\s+-f\s+\/var\/log\/", "rm"),
+    _command(r"cat\s+\/dev\/null\s*>\s*\/var\/log\/", "cat"),
+    _command(r"Get-EventLog\s+-LogName\s+\*\s*\|\s*Remove-EventLog", "get-eventlog"),
+    _command(r"wevtutil\s+cl\s+(?:System|Security|Application)", "wevtutil"),
 ]
 
 

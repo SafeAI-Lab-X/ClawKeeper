@@ -20,8 +20,8 @@ Returns the scrubbed string + the list of redactions made (for audit).
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable
 
 PLACEHOLDER = "[REDACTED]"
 
@@ -83,7 +83,7 @@ def redact(text: str) -> tuple[str, list[Redaction]]:
         # Replace each match in `out`, recording position relative to ORIGINAL.
         # For simplicity we record positions relative to the current `out` —
         # not perfect for downstream offset use but fine for audit counts.
-        def _sub(m):
+        def _sub(m, pattern_id=pattern_id):
             redactions.append(
                 Redaction(
                     pattern_id=pattern_id,
@@ -105,6 +105,25 @@ def redact_lines(lines: Iterable[str]) -> tuple[list[str], list[Redaction]]:
         out_lines.append(scrubbed)
         all_red.extend(reds)
     return out_lines, all_red
+
+
+_SHORT_SECRET = re.compile(
+    r"(?i)(\b(?:api[_-]?key|token|password|passwd|secret|authorization|cookie)\b['\"]?\s*[:=]\s*)"
+    r"(?:'[^'\n]*'|\"[^\"\n]*\"|[^\s;&,'\"]+)"
+)
+_AUTH_HEADER = re.compile(r"(?i)\b(?:authorization|proxy-authorization|cookie|set-cookie)\s*:[^\r\n]*")
+_URL_USERINFO = re.compile(r"(?i)(https?://)[^\s/'\"]+@")
+
+
+def scrub_context(text: str, *, preserve_offsets: bool = False) -> str:
+    """Scrub learning/debug evidence; optional masks retain UTF-8 offsets."""
+    if preserve_offsets:
+        for pattern in [_AUTH_HEADER, _URL_USERINFO, _SHORT_SECRET, *(p for _, p in _PATTERNS)]:
+            text = pattern.sub(lambda m: "*" * len(m.group().encode()), text)
+        return text
+    text = _AUTH_HEADER.sub(PLACEHOLDER, text)
+    text = _URL_USERINFO.sub(r"\1[REDACTED]@", text)
+    return _SHORT_SECRET.sub(r"\1[REDACTED]", redact(text)[0])
 
 
 def credential_redact_guard(event: dict) -> dict | None:

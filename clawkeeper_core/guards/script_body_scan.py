@@ -1,30 +1,14 @@
-"""Script-body scanner — heuristic detection of sensitive operations
-inside shell or Python scripts where literal-path regex fails.
+"""Sensitive-path heuristic over shared, bounded execution facts.
 
-Closes the gap path_guard cannot:  dynamic path construction via
-`Path.home() / '.aws' / 'credentials'`, `os.path.expanduser('~/.ssh/...')`,
-or runtime string assembly that never produces a single literal sensitive
-path token.  Surfaced concretely by red-team scenario 07.a re-run:
-the agent split `'.aws'` and `'credentials'` across `Path()` operands
-and successfully read `/root/.aws/credentials` via `RawConfigParser.read()`.
-
-Intentionally heuristic and substring-based:  not a full AST parser.
-Trade-off — minor false positives (a benign script that mentions
-`~/.aws` in a docstring AND happens to call `open()`) for catching the
-cases real adversaries actually use.
-
-Reduce false positives via two rules:
-  1.  Both a sensitive-dir marker AND a file-op primitive must appear in
-      the same `command` string.
-  2.  The two markers must be close-ish (≤500 chars between them) so a
-      coincidental co-occurrence in unrelated parts of a large script
-      doesn't fire.
+Python retains the proximity heuristic for dynamically assembled paths. Its
+file-operation evidence must be a parsed call; proven output data, comments and
+standalone literals are excluded. Shell checks use individual invocation facts.
+This does not attempt arbitrary Python data-flow analysis.
 """
 
 from __future__ import annotations
 
-from typing import Optional
-
+from clawkeeper_core.execution import analysis_scope, analyze_event
 from clawkeeper_core.learned_rules import match_learned
 
 # Markers for sensitive directories / files. Case-insensitive matched.
@@ -84,7 +68,7 @@ _FILE_OP_MARKERS = [
 _PROXIMITY = 500  # chars between the two markers — empirical
 
 
-def _find_first(text: str, needles, *, lower: bool = False) -> Optional[tuple[int, str]]:
+def _find_first(text: str, needles, *, lower: bool = False) -> tuple[int, str] | None:
     """Return the first (offset, marker) match, or None."""
     haystack = text.lower() if lower else text
     for n in needles:
@@ -110,55 +94,75 @@ def _find_all(text: str, needles, *, lower: bool = False) -> list[tuple[int, str
     return out
 
 
-def script_body_scan_guard(event: dict) -> Optional[dict]:  # noqa: PLR0911 -- independent learned rule path
-    """Block when a command body contains BOTH a sensitive-dir marker AND a
-    file-read primitive within `_PROXIMITY` chars of each other.
-    """
-    cmd = (event.get("params") or {}).get("command", "") or ""
-    if not cmd:
+def _scan(text: str, operations: list[tuple[int, str]]) -> dict | None:
+    dir_hits = _find_all(text, _SENSITIVE_DIR_MARKERS, lower=True)
+    if not dir_hits or not operations:
         return None
-
-    learned = match_learned("script_body_scan", event)
-    if learned is not None:
-        return learned
-
-    dir_hits = _find_all(cmd, _SENSITIVE_DIR_MARKERS, lower=True)
-    if not dir_hits:
+    distance, d_marker, o_marker = min(
+        (abs(d_off - o_off), d_marker, o_marker)
+        for d_off, d_marker in dir_hits for o_off, o_marker in operations
+    )
+    if distance > _PROXIMITY:
         return None
-
-    op_hits = _find_all(cmd, _FILE_OP_MARKERS, lower=False)
-    if not op_hits:
-        return None
-
-    # Find a close pair.
-    closest_pair = None
-    closest_dist = None
-    for d_off, d_marker in dir_hits:
-        for o_off, o_marker in op_hits:
-            dist = abs(d_off - o_off)
-            if closest_dist is None or dist < closest_dist:
-                closest_dist = dist
-                closest_pair = (d_marker, o_marker, dist)
-
-    if closest_pair is None or closest_dist is None:
-        return None
-    if closest_dist > _PROXIMITY:
-        return None
-
-    d_marker, o_marker, dist = closest_pair
     return {
         "block": True,
         "outcome": "deny",
         "source": "script_body_scan:co_occurrence",
         "severity": "high",
-        "reason": (
-            f"Script body references sensitive marker {d_marker!r} alongside "
-            f"file-op primitive {o_marker!r} ({dist} chars apart); likely "
-            "credential/secret access via dynamic path construction."
-        ),
+        "reason": (f"Sensitive marker {d_marker!r} near parsed file operation "
+                   f"{o_marker!r} ({distance} chars apart)"),
         "evidence": {
-            "sensitive_markers": list({m for _, m in dir_hits})[:5],
-            "file_op_markers": list({m for _, m in op_hits})[:5],
-            "min_distance_chars": dist,
+            "sensitive_markers": sorted({m for _, m in dir_hits})[:5],
+            "file_op_markers": sorted({m for _, m in operations})[:5],
+            "min_distance_chars": distance,
         },
     }
+
+
+def _python_operations(calls, text):
+    operations = []
+    data = text.encode()
+    for call in calls:
+        if call.kind != "python.operation":
+            continue
+        name = call.executable.removeprefix("python:")
+        base = len(data[:call.origin.start].decode())
+        for marker in _FILE_OP_MARKERS:
+            operation = marker.strip().removesuffix("(")
+            if (name == operation or name.endswith("." + operation)
+                    or (operation.startswith(".") and name.endswith(operation))
+                    or name.startswith(operation + ".")):
+                operations.append((base, marker))
+    return operations
+
+
+@analysis_scope()
+def script_body_scan_guard(event: dict) -> dict | None:
+    learned = match_learned("script_body_scan", event)
+    if learned is not None:
+        return learned
+    facts = analyze_event(event)
+    if not facts.complete:
+        return {"block": True, "outcome": "ask", "source": "script_body_scan:analysis",
+                "reason": "Execution context analysis incomplete", "analysis": "indeterminate"}
+    for source_id, source in enumerate(facts.sources):
+        calls = [c for c in facts.calls if c.origin.source == source_id]
+        if source.language == "python":
+            data = bytearray(source.text.encode())
+            for span in facts.data:
+                if span.origin.source == source_id:
+                    data[span.origin.start:span.origin.end] = b" " * (span.origin.end - span.origin.start)
+            text = data.decode()
+            result = _scan(text, _python_operations(calls, text))
+            if result:
+                result["evidence"]["source_id"] = source_id
+                return result
+        else:
+            for call in calls:
+                text = call.render(learned=True)
+                operations = [(0, marker) for marker in _FILE_OP_MARKERS
+                              if marker == call.executable + " "]
+                result = _scan(text, operations)
+                if result:
+                    return result
+    return None

@@ -12,22 +12,19 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from clawkeeper_core.guards.exec_gate import guard_execution
 from clawkeeper_core.security_rules import (
     ANOMALOUS_ACTIVITY_CONFIG,
     CREDENTIAL_LEAK_PATTERNS,
-    DANGEROUS_COMMAND_PATTERNS,
     DETECTION_DESCRIPTIONS,
     HIGH_RISK_TOOLS,
     PROMPT_INJECTION_PATTERNS,
 )
 from clawkeeper_core.state import resolve_state_dir, resolve_user_openclaw_state_dir
-
-_COMMAND_TOOL_RE = re.compile(r"^(exec|shell|spawn|bash|sh|command)$", re.IGNORECASE)
-
 
 # ── Log scanner ────────────────────────────────────────────────────────────
 
@@ -85,14 +82,9 @@ def _detect_dangerous_commands(records: list[dict[str, Any]]) -> list[int]:
     for i, record in enumerate(records):
         if record.get("type") != "before_tool_call":
             continue
-        tool_name = record.get("toolName") or ""
-        if not _COMMAND_TOOL_RE.match(tool_name):
-            continue
-        params = record.get("params")
-        if not params:
-            continue
-        params_str = json.dumps(params, ensure_ascii=False)
-        if any(p.search(params_str) for p in DANGEROUS_COMMAND_PATTERNS):
+        decision = guard_execution(record)
+        # Incomplete analysis is not evidence of a known dangerous command.
+        if decision.get("block") and decision.get("matched"):
             affected.append(i)
     return affected
 

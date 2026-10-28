@@ -73,9 +73,21 @@ not proof that a rule cannot produce false positives on other workloads.
 
 | Target | Learned regex searches |
 |---|---|
-| `exec_gate` | Extracted command text |
+| `exec_gate` | Normalized executable invocations and real pipelines from shared syntax analysis |
 | `path_guard` | Extracted paths after home expansion and normalization |
-| `script_body_scan` | Command body, independently of the built-in marker heuristic |
+| `script_body_scan` | The same invocation views, plus named Python operations (`python:open '/path'`), independently of the built-in marker heuristic |
+
+Command and script patterns must match from the start of a view and cover its
+complete executable/operation name. This check runs inside the same bounded
+regex worker. Literal comments, assignments, print payloads, interpreter source
+arguments and known metadata argument slots cannot substitute for an actual
+call. Interpreter module names and script filenames remain in the view; only
+inline source payloads and their positional data are masked. Nested executed
+sources, including literal executable here-strings, are analyzed as separate calls. Source validation
+and runtime matching use exactly the same views, including nested execution
+envelopes; independent fields are never concatenated into executable source.
+Incomplete command analysis is not a clean result or a learnable sample. This
+remains bounded static analysis, not arbitrary Python data-flow analysis.
 
 Learned rules are held in immutable snapshots separately from built-in rules.
 Each guard chain pins one snapshot. Reload replaces the whole learned set,
@@ -84,8 +96,29 @@ records; rejected records remain in the store and are logged rather than
 activated. Legacy records without source arguments use their saved command
 sample; truncated historical samples that no longer match are rejected.
 
-New records retain only redacted, target-specific `source_texts` for source
-validation. Generic and nested argument fields use the same target extraction
+New rules choose a stable `subject`: `program.name`, `python.module`,
+`script.path`, `python.operation` (script guard only), or `path` (path guard only).
+Names/modules/operations use fullmatch; paths use search. `invocation` retains
+the executable-first compatibility projection when an argv relationship is
+needed. A model chooses the subject; source validation rejects an unsupported
+field or a pattern that fails its source or matches the benign corpus. No
+agent-specific regex format or per-call Judge is introduced.
+
+New records retain redacted `source_texts` for compatibility plus versioned
+`source_facts` containing only the selected subject's values. The fact selector
+schema is 1 and `source_view_version`/validator is 5. Historical raw samples are
+reparsed; normalized version-4 views retain their matching projection. Version-3
+bare program samples migrate to `program.name`, preserving matches when runtime
+argv contains a module/script. Ambiguous or incompatible samples are kept
+inactive with `inactive_reason` rather than silently changing their meaning.
+Watcher and adapters must be upgraded together: protocol 2 includes subject and
+subject version in each rule and in the snapshot hash. An incompatible response
+retains the last valid snapshot and pauses the current call.
+An inactive historical record can be replaced atomically by a newly validated
+sample with the same rule identity, without consuming an extra capacity slot.
+An active duplicate is still rejected. A transient regex worker failure during
+existing-record validation leaves the store intact and does not permit replacement.
+Generic and nested argument fields use the same target extraction
 as runtime guards. Environment variables, headers, request bodies and named
 credential fields are masked before extraction. Known credential forms (including short
 key/value secrets, authorization headers and URL user information) are scrubbed.
@@ -96,9 +129,12 @@ fails source validation and is not admitted.
 Legacy records are migrated atomically when read, clearing raw `source_command`
 and `source_args`. Invalid records remain inspectable with their source fields
 cleared. `/watcher/learned` preserves the list response and policy metadata but
-returns empty/null source fields and never returns `source_texts`. Deletion
-accepts legacy pattern hashes (all matching targets) and target-plus-pattern
-rule IDs (one target). Dashboard text is escaped before insertion into HTML.
+returns empty/null source fields and never returns `source_texts` or `source_facts`.
+Deletion accepts legacy pattern hashes (all matching targets), legacy rule IDs
+retained by migration, and new target/subject/pattern rule IDs. The compatibility
+subject retains its historical target-plus-pattern ID. Rules with the same regex
+in different subjects have separate identities. Dashboard text is escaped before
+insertion into HTML.
 
 ### Resource limits and failures
 
@@ -147,16 +183,16 @@ adapters and standalone processes do not automatically receive these rules.
 
 ```json
 {
-  "protocol_version": 1,
-  "validation_version": 2,
+  "protocol_version": 2,
+  "validation_version": 5,
   "version": "<content SHA-256>",
   "instance_id": "<process UUID>",
   "pid": 1234,
-  "rules": [{"id": "<target + pattern SHA-256>", "guard_target": "exec_gate", "pattern": "..."}]
+  "rules": [{"id": "<rule SHA-256>", "guard_target": "exec_gate", "pattern": "CK_EXAMPLE_\\d+", "subject": "program.name", "subject_version": 1}]
 }
 ```
 
-The version covers the sorted rules and validator version. Source samples are
+The version covers the sorted rules (including subjects) and validator version. Source samples are
 excluded from this response. A matching `If-None-Match` receives `304`; both
 responses include `ETag` and `X-ClawKeeper-Instance`, so a daemon restart can be
 distinguished from a policy change. `/watcher/health` includes the same version
@@ -187,6 +223,25 @@ records provide evidence of its local policy and actual matches. The daemon
 entrypoint enables INFO logging. When embedding the daemon or adapter in another
 application, enable INFO on this logger to retain learning and synchronization
 events.
+
+### Replaying and testing detection
+
+`python -m clawkeeper_core.execution 'COMMAND'` runs the real local pre-tool
+guard chain and emits a decision, parsed facts and source provenance. It never
+executes COMMAND, calls a model, or opens the live learning store. Use
+`--event-stdin` for nested tool inputs. Export `/watcher/rules` and pass
+`--rules-snapshot FILE` to reproduce an adapter's downloaded policy. Inputs and
+snapshot files are capped at 1 MiB; parsed code shares the normal source/node/
+depth budgets. Recognized secrets in debug evidence are masked without moving
+source byte ranges.
+
+Run `pytest -q tests/test_command_facts.py tests/test_command_properties.py
+tests/test_semantic_learning.py tests/test_watcher_sync.py` for the focused
+suite. These cover field selection, source provenance, quote/wrapper
+transformations, descriptor order, uncertainty outcomes, old-view migrations,
+subject-aware identities, pinned snapshots, and real separate-process learning,
+restart, deletion and disconnect behavior. Dangerous inputs remain inert strings;
+only fixed printf scripts run as benign differential probes.
 
 ## Design notes
 

@@ -13,9 +13,23 @@ def evaluate(request):
             patterns = [re.compile(p, re.IGNORECASE) for p in request["patterns"]]
         except (re.error, OverflowError, RecursionError):
             return {"error": "invalid_pattern"}
+        modes = request.get("modes") or ["invocation" if request.get("invocation_start", False) else "search"] * len(patterns)
+        scopes = request.get("pattern_groups")
+
+        def matches_text(rx, text, mode):
+            if mode == "full":
+                return rx.fullmatch(text) is not None
+            if mode == "search":
+                return rx.search(text) is not None
+            match = rx.match(text)
+            # A learned command rule must cover the complete executable token.
+            # `ver` must not match a program named `version-control` either.
+            return match is not None and match.end() >= len(text.split(" ", 1)[0])
+
         matches = [
-            next((i for i, rx in enumerate(patterns) if any(rx.search(t) for t in texts)), None)
-            for texts in request["groups"]
+            next((i for i, rx in enumerate(patterns) if (scopes is None or scopes[i] == group)
+                  and any(matches_text(rx, t, modes[i]) for t in texts)), None)
+            for group, texts in enumerate(request["groups"])
         ]
         return {"matches": matches}
     except Exception:

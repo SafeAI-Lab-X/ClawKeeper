@@ -6,6 +6,7 @@ import threading
 import time
 
 from clawkeeper_core.bounded_regex import RegexResourceError
+from clawkeeper_core.execution import analysis_scope
 from clawkeeper_core.learned_rules import (
     audit,
     install_snapshot,
@@ -17,6 +18,7 @@ from clawkeeper_core.watcher.learner import STORE, StoreUnavailableError, valida
 _reload_lock = threading.RLock()
 
 
+@analysis_scope()
 def apply_learned_patterns() -> int:
     """Newly installed count, local to this process. Also applies removals.
 

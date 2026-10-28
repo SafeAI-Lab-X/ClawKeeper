@@ -180,6 +180,89 @@ The default guard set currently covers:
 
 The exact policies are intentionally small and inspectable; see `clawkeeper_core/guards/`.
 
+## Command execution gate
+
+The execution gate runs locally and makes no model calls. Built-in command
+patterns are scoped to the program called in each shell segment. Text in an
+`echo` argument, a comment, a Python string, or a normal file-write payload is
+not treated as a shell program invocation. The gate checks each executable
+field independently, and log scanning uses the same context-aware detector.
+
+The analyzer uses upstream tree-sitter for Bash syntax and Python's `ast` for
+inline Python, Python heredocs and literal here-strings. It follows command substitutions, literal
+shell `-c` bodies, common literal `os.system`/`subprocess` calls (including import
+aliases and explicit `subprocess` executable overrides), and supported wrappers
+such as `sudo`, `env`, and `command`. Redirections survive wrapper unwrapping,
+and pipeline analysis preserves redirected and grouped stages. Ordinary dynamic
+data arguments after a known wrapper target remain data; dynamic program names
+and code operands require review. Process substitutions supplying executable
+source also require review. Each
+built-in pattern declares its executable scope; a clean segment cannot exempt
+another segment. Existing rule IDs and risk policies, including the restriction
+on actual `whoami`/`ver` calls, are preserved.
+
+Malformed syntax, unresolved executable text, unsupported inline languages,
+and source/node/depth limits produce `block=true`, `outcome=ask`, and
+`analysis=indeterminate`. This pauses the call through existing adapters; it is
+not a claim that a known dangerous command was found. PowerShell code is not
+fully parsed; PowerShell interpreter invocations require review. Simple literal
+`cmd /c` calls are inspected, but this is not a complete Cmd parser.
+
+All 49 built-in patterns use executable scopes. Built-in and learned checks
+share the same extraction and syntax analysis: explicit execution fields
+(`command`, `cmd`, `script`, plus code/input fields on execution tools), including
+nested execution envelopes and generic `payload` fields. Descriptions, headers,
+environment metadata and known file/content tools are excluded from command
+analysis. Custom tools using other fields need a corresponding field mapping.
+Independent path and content guards still apply.
+
+Parsing now produces immutable facts: original source documents, UTF-8 byte
+ranges, argument values/roles, nested code origins, pipeline stages and effective
+stdin. Guards, log scanning, learning and explanations consume this same model.
+A guard-chain scope parses each distinct input once; facts expire at the end of
+that evaluation. Changed inputs invalidate the scoped cache. No model is called
+by this assessment path.
+
+New learned rules select a semantic `subject`: `program.name`, `python.module`,
+`script.path`, `python.operation` or `path`. Names use full matching; paths use
+search. The `invocation` subject preserves the earlier executable-first matching
+projection for rules that need several arguments. Synthesis, validation, reload
+and enforcement use the same field selectors. The script heuristic also uses
+parsed calls, excluding comments, standalone Python strings and recognized
+literal output data while retaining dynamic-path proximity detection.
+
+Source samples carry a subject and schema version. Legacy raw samples are
+reparsed; version-3 bare program samples migrate to `program.name` so an anchored
+`node$` rule still matches `node script.js`. Incompatible samples stay inactive
+with an inspectable reason. Version-4 invocation samples retain their projection.
+Protocol **2**, validator **5**, and subject schema **1** prevent silently mixing
+matching semantics; upgrade Watcher and adapters together. Immutable snapshots,
+atomic replacement, deletions (including legacy IDs) and restart synchronization
+from issues #7/#8 remain covered by tests.
+
+Inspect a proposed call without running it or invoking a Judge:
+
+```bash
+python -m clawkeeper_core.execution 'echo whoami'
+python -m clawkeeper_core.execution 'bash -c whoami'
+python -m clawkeeper_core.execution 'bash -c "$SOURCE"'
+```
+
+The JSON output contains the real guard-chain decision (`allow`/`deny`/`ask`),
+facts, source ranges, diagnostics and pinned rule version. Recognized secrets
+are masked while preserving byte offsets. Use `--event-stdin` for a JSON tool
+event and `--rules-snapshot exported-rules.json` to replay an exported
+`GET /watcher/rules` snapshot; this never reads or migrates the live learned store.
+The installed entry point is `clawkeeper-explain`.
+
+This is bounded static detection, not a sandbox or a proof of arbitrary program
+safety. It does not follow external scripts, runtime aliases, arbitrary Python
+data flow, or executable files on disk. Keep the host's permissions and sandbox
+enabled. Some valid Bash redirection forms exceed the upstream grammar or fail
+its descriptor-boundary checks; these require review. Regression tests pair
+inert data with actual calls and use generated quoting/wrapper transformations;
+only fixed benign `printf` probes execute to cross-check shell stdin semantics.
+
 ## Development
 
 ```bash

@@ -30,6 +30,8 @@ dependencies = [
     "httpx>=0.27",
     "openai>=1.0",
     "typing-extensions>=4.10",
+    "tree-sitter>=0.25,<0.26",
+    "tree-sitter-bash>=0.25,<0.26",
 ]
 
 [project.optional-dependencies]
@@ -46,6 +48,7 @@ dev = [
 
 [project.scripts]
 clawkeeper-server = "clawkeeper_core.server:main"
+clawkeeper-explain = "clawkeeper_core.execution:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["clawkeeper_core"]

@@ -29,12 +29,17 @@ from clawkeeper_core.bounded_regex import (
     MAX_PATTERNS,
     MAX_TEXT_CHARS,
     MAX_TEXTS,
+    RegexResourceError,
 )
-from clawkeeper_core.guards.credential_redact import redact
+from clawkeeper_core.command_facts import FACT_VERSION
+from clawkeeper_core.execution import analysis_scope
+from clawkeeper_core.guards.credential_redact import redact, scrub_context
 from clawkeeper_core.learned_rules import (
     BENIGN_COMMANDS,
+    VALIDATION_VERSION,
     LearnedRule,
     audit,
+    checked_subject,
     rule_id,
     target_texts,
     validate_rule,
@@ -43,6 +48,7 @@ from clawkeeper_core.learned_rules import (
 _STORE_PATH = Path.home() / ".clawkeeper" / "learned_patterns.json"
 _CANDIDATE_CONFIDENCE = 0.6
 _MAX_STORE_BYTES = 8 * 1024 * 1024
+_NAME_ONLY_VIEW_VERSION = 3
 
 _BENIGN_CORPUS = list(BENIGN_COMMANDS)
 
@@ -53,18 +59,30 @@ A command bypassed all deterministic guards but was flagged by the Watcher:
   tool: {tool_name}
   command: {command}
   normalized candidate paths: {paths}
+  normalized invocation/operation views: {views}
+  stable fact fields (same parser as enforcement): {facts}
   watcher reason: {reason}
 
 Extract a minimal Python regex (re.IGNORECASE) that:
 1. Matches this command and close variants
 2. Does NOT match any of: {benign}
 3. Is as specific as possible — anchor to the dangerous part, not generic tokens
-4. Target semantics: exec_gate searches command text; script_body_scan searches the
-   command body as regex (not a literal marker); path_guard searches normalized
-   absolute paths extracted from arguments, not the surrounding shell command.
+4. Choose a stable subject: program.name, python.module, script.path,
+   python.operation (script_body_scan only), or path (path_guard only).
+   Names/modules/operation names use fullmatch; paths use search.
+   invocation is a compatibility projection and should only be used for rules
+   that need several argv fields together. It matches from the complete program
+   name; raw source text is never a matching subject.
+   exec_gate matches normalized executable invocations, not raw source text.
+   script_body_scan also includes Python operations such as `python:open '/path'`.
+   For both targets the regex MUST start at the invocation/operation name and
+   cover the whole name. Data arguments, comments and inline source are masked;
+   nested executed code is represented as separate invocations. Never learn a
+   rule from documentation or print data alone.
+   path_guard searches normalized absolute paths, with substring search.
 
 Output ONLY JSON (no prose, no fence):
-{{"pattern": "...", "guard_target": "exec_gate|script_body_scan|path_guard", "confidence": 0.0}}
+{{"pattern": "...", "guard_target": "exec_gate|script_body_scan|path_guard", "subject": "program.name|python.module|script.path|python.operation|path|invocation", "confidence": 0.0}}
 
 Output the JSON null literal if no reliable pattern can be extracted.
 """
@@ -82,6 +100,11 @@ class PatternCandidate:
     source_tool_name: str = "terminal"
     source_args: dict | None = None
     source_texts: list[str] | None = None
+    source_view_version: int = 0  # 0: historical raw samples; current: normalized views
+    subject: str | None = None
+    source_facts: list[dict] | None = None
+    inactive_reason: str | None = None
+    legacy_ids: list[str] | None = None
 
 
 _PRIVATE_KEYS = frozenset({"env", "environment", "headers", "body"})
@@ -119,35 +142,58 @@ def minimal_params(args: dict | None, command: str) -> dict:
     return sanitize(args)
 
 
-_SHORT_SECRET = re.compile(
-    r"(?i)(\b(?:api[_-]?key|token|password|passwd|secret|authorization|cookie)\b['\"]?\s*[:=]\s*)"
-    r"(?:'[^'\n]*'|\"[^\"\n]*\"|[^\s;&,'\"]+)"
-)
-_AUTH_HEADER = re.compile(r"(?i)\b(?:authorization|proxy-authorization|cookie|set-cookie)\s*:[^\r\n]*")
-_URL_USERINFO = re.compile(r"(?i)(https?://)[^\s/'\"]+@")
-
-
 def scrub_sample(text: str) -> str:
     if not isinstance(text, str) or len(text) > MAX_TEXT_CHARS:
         raise ValueError("invalid source sample size")
-    text = _AUTH_HEADER.sub("[REDACTED]", text)
-    text = _URL_USERINFO.sub(r"\1[REDACTED]@", text)
-    return _SHORT_SECRET.sub(r"\1[REDACTED]", redact(text)[0])
+    return scrub_context(text)
 
 
-def minimize_candidate(candidate: PatternCandidate) -> PatternCandidate:
-    if candidate.source_texts is None:
+def minimize_candidate(candidate: PatternCandidate) -> PatternCandidate:  # noqa: PLR0912 -- explicit schema migrations
+    if candidate.inactive_reason:
+        raise ValueError(candidate.inactive_reason)
+    subject = checked_subject(candidate.guard_target, candidate.subject)
+    legacy_ids = candidate.legacy_ids or []
+    if not isinstance(legacy_ids, list) or any(i != rule_id(candidate.guard_target, candidate.pattern) for i in legacy_ids):
+        raise ValueError("invalid legacy rule identities")
+    if candidate.source_facts is not None:
+        if not isinstance(candidate.source_facts, list) or len(candidate.source_facts) > MAX_TEXTS:
+            raise ValueError("invalid source facts")
+        texts = []
+        for fact in candidate.source_facts:
+            if (not isinstance(fact, dict) or fact.get("subject") != subject
+                    or type(fact.get("subject_version")) is not int or fact["subject_version"] != FACT_VERSION):
+                raise ValueError("incompatible source fact schema")
+            texts.append(fact.get("value"))
+    elif candidate.source_texts is None:
         texts = target_texts(candidate.guard_target, {
             "toolName": candidate.source_tool_name,
             "params": minimal_params(candidate.source_args, candidate.source_command),
-        })
-    else:
+        }, subject)
+    elif candidate.source_view_version in (3, 4, VALIDATION_VERSION) or candidate.guard_target == "path_guard":
         texts = candidate.source_texts
+        if candidate.source_view_version == _NAME_ONLY_VIEW_VERSION and candidate.subject is None and candidate.guard_target != "path_guard":
+            if isinstance(texts, list) and texts and all(isinstance(t, str) and re.fullmatch(r"[\w.+:-]+", t) and not t.startswith("python:") for t in texts):
+                # v3 erased interpreter argv. A bare-name view describes the
+                # program subject, not today's invocation-with-argv projection.
+                subject = "program.name"
+                legacy_ids = [rule_id(candidate.guard_target, candidate.pattern)]
+            elif any(t in {"bash", "sh", "python", "python3", "node", "perl", "ruby", "php"} for t in texts):
+                raise ValueError("v3 source roles cannot be reconstructed")
+    elif candidate.source_view_version in (0, 2):
+        # Historical samples retained raw shell/Python text. Reparse rather
+        # than trusting old false-positive matches as normalized invocations.
+        texts = [view for source in candidate.source_texts for view in target_texts(
+            candidate.guard_target, {"toolName": candidate.source_tool_name,
+                                     "params": {"command": scrub_sample(source)}}, subject)]
+    else:
+        raise ValueError("unsupported learned source view version")
     if (not isinstance(texts, list) or not texts or len(texts) > MAX_TEXTS
             or any(not isinstance(t, str) or len(t) > MAX_TEXT_CHARS for t in texts)):
         raise ValueError("invalid source sample")
     return replace(candidate, source_command="", source_args=None,
-                   source_texts=[scrub_sample(text) for text in texts])
+                   source_texts=[scrub_sample(text) for text in texts],
+                   source_view_version=VALIDATION_VERSION, subject=subject, legacy_ids=legacy_ids,
+                   source_facts=[{"subject": subject, "subject_version": FACT_VERSION, "value": scrub_sample(t)} for t in texts])
 
 
 class StoreUnavailableError(ValueError):
@@ -167,7 +213,7 @@ def validate_candidate(candidate: PatternCandidate) -> LearnedRule:
     candidate = minimize_candidate(candidate)
     if scrub_sample(candidate.pattern) != candidate.pattern:
         raise ValueError("credential-shaped pattern rejected")
-    return validate_rule(candidate.pattern, candidate.guard_target, source_texts=candidate.source_texts)
+    return validate_rule(candidate.pattern, candidate.guard_target, source_texts=candidate.source_texts, subject=candidate.subject)
 
 
 class LearnedPatternStore:
@@ -221,7 +267,7 @@ class LearnedPatternStore:
                     audit("rejected", level=logging.WARNING, skip_reason="invalid stored record")
                     if isinstance(record, dict):
                         sanitized_record = dict(record)
-                        for field, empty in (("source_args", None), ("source_command", ""), ("source_texts", [])):
+                        for field, empty in (("source_args", None), ("source_command", ""), ("source_texts", []), ("source_facts", [])):
                             if field in sanitized_record:
                                 sanitized_record[field] = empty
                         migrated.append(sanitized_record)
@@ -230,8 +276,9 @@ class LearnedPatternStore:
                     continue
                 try:
                     safe = minimize_candidate(candidate)
-                except (TypeError, ValueError, AttributeError, RecursionError):
-                    safe = replace(candidate, source_command="", source_args=None, source_texts=[])
+                except (TypeError, ValueError, AttributeError, RecursionError) as exc:
+                    safe = replace(candidate, source_command="", source_args=None, source_texts=[], source_facts=[],
+                                   inactive_reason=str(exc) if isinstance(exc, ValueError) else "invalid source sample")
                 candidates.append(safe)
                 migrated.append(asdict(safe))
             if migrated != records:
@@ -262,14 +309,35 @@ class LearnedPatternStore:
         audit("validated", rule_id=rule.id, guard_target=rule.guard_target)
         with self._lock:
             records = self._load()
+            retained = []
+            for record in records:
+                same = (isinstance(record, dict) and record.get("pattern") == candidate.pattern
+                        and record.get("guard_target") == candidate.guard_target)
+                if same:
+                    try:
+                        stored_subject = minimize_candidate(PatternCandidate(**record)).subject
+                    except (TypeError, ValueError):
+                        stored_subject = record.get("subject") or ("path" if candidate.guard_target == "path_guard" else "invocation")
+                    same = stored_subject == candidate.subject
+                if not same:
+                    retained.append(record)
+                    continue
+                try:
+                    validate_candidate(PatternCandidate(**record))
+                except RegexResourceError:
+                    # A transient worker failure cannot establish that an
+                    # existing rule is invalid or authorize replacing it.
+                    audit("rejected", rule_id=rule.id, skip_reason="existing_validation_unavailable")
+                    return False
+                except (TypeError, ValueError):
+                    continue  # replace inactive same-identity records atomically
+                audit("rejected", rule_id=rule.id, skip_reason="duplicate")
+                return False
+            records = retained
             pattern_chars = sum(len(r["pattern"]) for r in records
                                 if isinstance(r, dict) and isinstance(r.get("pattern"), str))
             if len(records) >= MAX_PATTERNS or pattern_chars + len(candidate.pattern) > MAX_PATTERN_SET_CHARS:
                 audit("rejected", rule_id=rule.id, skip_reason="store_capacity")
-                return False
-            if any(isinstance(r, dict) and r.get("pattern") == candidate.pattern and
-                   r.get("guard_target") == candidate.guard_target for r in records):
-                audit("rejected", rule_id=rule.id, skip_reason="duplicate")
                 return False
             records.append(asdict(candidate))
             try:
@@ -287,7 +355,8 @@ class LearnedPatternStore:
             records = [r for r in records
                        if not (isinstance(r, dict) and isinstance(r.get("pattern"), str) and
                                (hashlib.sha256(r["pattern"].encode()).hexdigest() == pattern_hash or
-                                rule_id(r.get("guard_target", ""), r["pattern"]) == pattern_hash))]
+                                pattern_hash in (r.get("legacy_ids") or []) or
+                                rule_id(r.get("guard_target", ""), r["pattern"], r.get("subject")) == pattern_hash))]
             if len(records) == before:
                 return False
             self._save(records)
@@ -298,7 +367,8 @@ class LearnedPatternStore:
 STORE = LearnedPatternStore()
 
 
-def synthesize_pattern(
+@analysis_scope()
+def synthesize_pattern(  # noqa: PLR0911 -- admission rejects invalid or incomplete samples
     command: str,
     reason: str,
     model: Any,
@@ -308,12 +378,21 @@ def synthesize_pattern(
 ) -> PatternCandidate | None:
     """Ask the LLM to extract a minimal regex from a bypassing command."""
     safe_params = minimal_params(args, command)
+    source_event = {"toolName": tool_name, "params": safe_params}
+    try:
+        views = {target: target_texts(target, source_event)
+                 for target in ("exec_gate", "script_body_scan")}
+    except ValueError:
+        return None  # incomplete source is not a learnable negative sample
     prompt = _SYNTHESIS_PROMPT.format(
         tool_name=tool_name,
         command=json.dumps(safe_params)[:1500],
         paths=json.dumps(target_texts("path_guard", {
             "toolName": tool_name, "params": safe_params,
         })),
+        views=json.dumps(views),
+        facts=json.dumps({subject: target_texts("script_body_scan" if subject == "python.operation" else "exec_gate", source_event, subject)
+                          for subject in ("program.name", "python.module", "script.path", "python.operation")}),
         reason=redact(reason)[0][:300],
         benign=", ".join(f'"{b}"' for b in _BENIGN_CORPUS),
     )
@@ -350,6 +429,7 @@ def synthesize_pattern(
             confidence=float(obj.get("confidence", 0.0)),
             created_at=datetime.now(UTC).isoformat(),
             source_tool_name=tool_name, source_args=args,
+            subject=obj.get("subject"),
         )
         candidate = minimize_candidate(candidate)
         validate_candidate(candidate)

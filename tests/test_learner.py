@@ -1,21 +1,22 @@
 """Tests for the self-improvement loop (learner + reload)."""
+# Scenario-local optional imports and concrete assertions keep setup explicit.
+# ruff: noqa: PLC0415, PLR2004
+
 from __future__ import annotations
 
 import json
-import re
-import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-pytestmark = pytest.mark.usefixtures("isolated_learning")
 
 from clawkeeper_core.watcher.learner import (
     LearnedPatternStore,
     PatternCandidate,
     synthesize_pattern,
 )
+
+pytestmark = pytest.mark.usefixtures("isolated_learning")
 
 
 def _make_store(tmp_path: Path) -> LearnedPatternStore:
@@ -24,9 +25,10 @@ def _make_store(tmp_path: Path) -> LearnedPatternStore:
 
 def _candidate(**kw) -> PatternCandidate:
     defaults = dict(
-        pattern=r"Path\.home\(\).*\.aws",
-        source_command="Path.home()/'.aws'/'credentials'",
+        pattern=r"python:open.*CK_LEARNED_SECRET",
+        source_command="open('/tmp/CK_LEARNED_SECRET').read()",
         guard_target="script_body_scan",
+        source_tool_name="python",
         confidence=0.91,
         created_at="2026-05-21T00:00:00+00:00",
     )
@@ -83,15 +85,16 @@ def test_synthesize_pattern_returns_candidate():
     mock_model = MagicMock()
     mock_model.return_value = MagicMock(
         content=json.dumps({
-            "pattern": r"Path\.home\(\).*credentials",
+            "pattern": r"python:open.*CK_LEARNED_SECRET",
             "guard_target": "script_body_scan",
             "confidence": 0.88,
         })
     )
     result = synthesize_pattern(
-        "Path.home()/'.aws'/'credentials'",
+        "open('/tmp/CK_LEARNED_SECRET').read()",
         "credential access via dynamic path",
         mock_model,
+        tool_name="python",
     )
     assert result is not None
     assert result.guard_target == "script_body_scan"
@@ -129,7 +132,7 @@ def test_apply_learned_patterns_adds_to_exec_gate(tmp_path):
 
     store = _make_store(tmp_path)
     c = _candidate(pattern=r"__ck_test_unique_xyz__", guard_target="exec_gate",
-                   source_command="echo __ck_test_unique_xyz__")
+                   source_command="__ck_test_unique_xyz__", source_tool_name="terminal")
     assert store.add(c)
 
     before = len(rules.DANGEROUS_COMMAND_PATTERNS)
@@ -141,7 +144,7 @@ def test_apply_learned_patterns_adds_to_exec_gate(tmp_path):
     from clawkeeper_core.guards.exec_gate import guard_execution, reset_exec_gate_cache
     reset_exec_gate_cache()
     assert guard_execution({"toolName": "terminal", "params": {
-        "command": "echo __ck_test_unique_xyz__"}})["block"] is True
+        "command": "__ck_test_unique_xyz__"}})["block"] is True
     # Idempotent second call
     with patch("clawkeeper_core.watcher.reload.STORE", store):
         added2 = rl.apply_learned_patterns()
@@ -153,8 +156,9 @@ def test_apply_learned_patterns_adds_to_exec_gate(tmp_path):
 
 def test_daemon_learned_endpoint(tmp_path):
     from fastapi.testclient import TestClient
-    from clawkeeper_core.watcher.daemon import build_app
+
     from clawkeeper_core.watcher import learner as lm
+    from clawkeeper_core.watcher.daemon import build_app
 
     store = _make_store(tmp_path)
     c = _candidate()

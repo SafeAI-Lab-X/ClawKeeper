@@ -198,18 +198,24 @@ def _execute(payload: str, deadline: float, pattern_count: int, group_count: int
         return matches
 
 
-def search_groups(patterns: list[str], groups: list[list[str]]) -> list[int | None]:
+def search_groups(patterns: list[str], groups: list[list[str]], *, invocation_start: bool = False,
+                  modes: list[str] | None = None, pattern_groups: list[int] | None = None) -> list[int | None]:
     if not patterns or len(patterns) > MAX_PATTERNS:
         raise RegexValidationError("invalid pattern count")
     if any(not isinstance(p, str) or not p or len(p) > MAX_PATTERN_CHARS for p in patterns):
         raise RegexValidationError("invalid pattern size")
+    if modes is not None and (len(modes) != len(patterns) or any(m not in {"search", "full", "invocation"} for m in modes)):
+        raise RegexValidationError("invalid matching modes")
+    if pattern_groups is not None and (len(pattern_groups) != len(patterns) or any(type(g) is not int or not 0 <= g < len(groups) for g in pattern_groups)):
+        raise RegexValidationError("invalid pattern subjects")
     if len(groups) > MAX_TEXTS or sum(len(g) for g in groups) > MAX_TEXTS:
         raise RegexResourceError("too many matching inputs")
     if any(not isinstance(t, str) or len(t) > MAX_TEXT_CHARS for g in groups for t in g):
         raise RegexResourceError("invalid matching input size")
     if sum(map(len, patterns)) + sum(len(t) for g in groups for t in g) > MAX_TOTAL_CHARS:
         raise RegexResourceError("matching input exceeds total character limit")
-    payload = json.dumps({"patterns": patterns, "groups": groups}, ensure_ascii=True)
+    payload = json.dumps({"patterns": patterns, "groups": groups,
+                          "invocation_start": invocation_start, "modes": modes, "pattern_groups": pattern_groups}, ensure_ascii=True)
     if len(payload) > MAX_INPUT_BYTES:
         raise RegexResourceError("matching input exceeds byte limit")
     deadline = time.monotonic() + REGEX_TIMEOUT_SECONDS

@@ -53,14 +53,18 @@ def run_server(store_path, descriptor):
     class Model:
         def __call__(self, messages):
             if len(messages) == 1:
+                module = "python -m CK_CANARY_" in messages[0]["content"]
                 payload = {
-                    "pattern": r"CK_CANARY_\d+",
+                    "pattern": r"python\s+-m\s+CK_CANARY_\d+" if module else r"CK_CANARY_\d+",
                     "guard_target": "exec_gate",
                     "confidence": 0.99,
                 }
+                if "CK_FIELD_" in messages[0]["content"]:
+                    payload.update(pattern=r"CK_FIELD_\d+", subject=(
+                        "python.module" if "python -m CK_FIELD_" in messages[0]["content"] else "program.name"))
             else:
                 payload = {
-                    "decision": "deny" if "CK_CANARY" in messages[-1]["content"] else "allow",
+                    "decision": "deny" if any(marker in messages[-1]["content"] for marker in ("CK_CANARY", "CK_FIELD")) else "allow",
                     "reason": "synthetic",
                     "confidence": 0.99,
                     "severity": "high",

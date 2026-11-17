@@ -49,6 +49,14 @@ def test_minimax_model_catalog_matches_declared_capabilities():
         ),
         input_modalities=("text", "image", "video"),
         thinking=("adaptive",),
+        thinking_always_on=True,
+        thinking_defaults_by_api={
+            "anthropic_messages": "adaptive",
+            "openai_chat_completions": "adaptive",
+        },
+        reasoning_effort=("low", "medium", "high", "xhigh", "max"),
+        reasoning_effort_default="max",
+        service_tier_supported=False,
     )
     assert MINIMAX_MODELS["MiniMax-M3"] == MiniMaxModelDefinition(
         model_id="MiniMax-M3",
@@ -61,12 +69,21 @@ def test_minimax_model_catalog_matches_declared_capabilities():
         ),
         input_modalities=("text", "image", "video"),
         thinking=("adaptive", "disabled"),
+        thinking_always_on=False,
+        thinking_defaults_by_api={
+            "anthropic_messages": "disabled",
+            "openai_chat_completions": "adaptive",
+        },
+        reasoning_effort=(),
+        reasoning_effort_default=None,
+        service_tier_supported=True,
         pricing_above_512k=MiniMaxTokenPricing(
             input=0.6,
             output=2.4,
             cache_read=0.12,
             cache_write=None,
         ),
+        priority_pricing_multiplier=1.5,
     )
 
 

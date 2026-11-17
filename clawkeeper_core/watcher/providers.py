@@ -34,8 +34,14 @@ class MiniMaxModelDefinition:
     pricing_usd_per_million_tokens: MiniMaxTokenPricing
     input_modalities: tuple[str, ...]
     thinking: tuple[str, ...]
+    thinking_always_on: bool
+    thinking_defaults_by_api: Mapping[str, str]
+    reasoning_effort: tuple[str, ...]
+    reasoning_effort_default: str | None
+    service_tier_supported: bool
     # Standard pricing above the documented 512k input tier, when applicable.
     pricing_above_512k: MiniMaxTokenPricing | None = None
+    priority_pricing_multiplier: float | None = None
 
 
 @dataclass(frozen=True)
@@ -60,6 +66,13 @@ MINIMAX_MODELS: Mapping[str, MiniMaxModelDefinition] = MappingProxyType(
             ),
             input_modalities=("text", "image", "video"),
             thinking=("adaptive",),
+            thinking_always_on=True,
+            thinking_defaults_by_api=MappingProxyType(
+                {"anthropic_messages": "adaptive", "openai_chat_completions": "adaptive"}
+            ),
+            reasoning_effort=("low", "medium", "high", "xhigh", "max"),
+            reasoning_effort_default="max",
+            service_tier_supported=False,
         ),
         "MiniMax-M3": MiniMaxModelDefinition(
             model_id="MiniMax-M3",
@@ -72,12 +85,20 @@ MINIMAX_MODELS: Mapping[str, MiniMaxModelDefinition] = MappingProxyType(
             ),
             input_modalities=("text", "image", "video"),
             thinking=("adaptive", "disabled"),
+            thinking_always_on=False,
+            thinking_defaults_by_api=MappingProxyType(
+                {"anthropic_messages": "disabled", "openai_chat_completions": "adaptive"}
+            ),
+            reasoning_effort=(),
+            reasoning_effort_default=None,
+            service_tier_supported=True,
             pricing_above_512k=MiniMaxTokenPricing(
                 input=0.6,
                 output=2.4,
                 cache_read=0.12,
                 cache_write=None,
             ),
+            priority_pricing_multiplier=1.5,
         ),
     }
 )

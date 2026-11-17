@@ -34,11 +34,14 @@ the other recommended model. Explicit legacy or custom model IDs remain supporte
 
 The catalog lists standard USD token pricing. For MiniMax-M3, the base rate applies
 up to the documented 512k input tier and `pricing_above_512k` describes the higher
-tier. Priority pricing is 1.5 times standard for MiniMax-M3; the Watcher does not
-request priority service. Flash uses adaptive thinking by default, and the Watcher
-leaves thinking and reasoning effort at the API defaults. The two recommended
-models also use the API's output limit instead of the Watcher's legacy 512-token
-cap, because thinking tokens share that budget with the decision JSON.
+tier. Priority pricing is 1.5 times standard for MiniMax-M3. Flash always uses
+adaptive thinking and supports reasoning effort from `low` through `max`, with
+`max` as the default. MiniMax-M3 defaults to adaptive thinking for OpenAI-compatible
+requests and disabled thinking for Anthropic-compatible requests; it supports the
+service tier field but ignores reasoning effort. The Watcher leaves these settings
+at their API defaults and does not request priority service. Both recommended models
+also use the API's output limit instead of the Watcher's legacy 512-token cap,
+because thinking tokens share that budget with the decision JSON.
 
 Model and request details: [MiniMax API documentation](https://platform.minimax.io/docs/api-reference/text-openai-api).
 

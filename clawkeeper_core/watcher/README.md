@@ -21,9 +21,29 @@ The daemon binds to `127.0.0.1:9099` by default. All env knobs:
 |---|---|---|
 | `CK_WATCHER_HOST` | `127.0.0.1` | Bind address — DO NOT bind to `0.0.0.0` unless you intend a network-exposed Watcher (and even then, fronted by a real auth proxy) |
 | `CK_WATCHER_PORT` | `9099` | |
+| `CK_WATCHER_PROVIDER` | unset | Set to `MiniMax` to use the built-in MiniMax provider configuration |
+| `CK_WATCHER_REGION` | `global_en` | MiniMax endpoint region: `global_en` or `cn_zh` |
 | `CK_WATCHER_MODEL` | `gpt-5.5` | LLM the Watcher reasons with |
 | `CK_WATCHER_BASE_URL` | `$OPENAI_BASE_URL` or `https://api.scode.chat/v1` | OpenAI-compatible endpoint |
 | `CK_WATCHER_API_KEY` | `$OPENAI_API_KEY` | |
+| `MINIMAX_API_KEY` | unset | MiniMax API key used when `CK_WATCHER_PROVIDER=MiniMax` |
+
+MiniMax defaults to `MiniMax-M3.1-Flash`. Set `CK_WATCHER_MODEL=MiniMax-M3` to select
+the other recommended model. Explicit legacy or custom model IDs remain supported;
+`CK_WATCHER_BASE_URL` remains available as an explicit endpoint override.
+
+The catalog lists standard USD token pricing. For MiniMax-M3, the base rate applies
+up to the documented 512k input tier and `pricing_above_512k` describes the higher
+tier. Priority pricing is 1.5 times standard for MiniMax-M3. Flash always uses
+adaptive thinking and supports reasoning effort from `low` through `max`, with
+`max` as the default. MiniMax-M3 defaults to adaptive thinking for OpenAI-compatible
+requests and disabled thinking for Anthropic-compatible requests; it supports the
+service tier field but ignores reasoning effort. The Watcher leaves these settings
+at their API defaults and does not request priority service. Both recommended models
+also use the API's output limit instead of the Watcher's legacy 512-token cap,
+because thinking tokens share that budget with the decision JSON.
+
+Model and request details: [MiniMax API documentation](https://platform.minimax.io/docs/api-reference/text-openai-api).
 
 Health check:
 

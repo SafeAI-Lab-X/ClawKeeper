@@ -24,3 +24,8 @@ Boundary with deterministic guards in `clawkeeper_core/guards/`:
 
 from clawkeeper_core.watcher.agent import Watcher, WatcherDecision  # noqa: F401
 from clawkeeper_core.watcher.policy import apply_post_filter  # noqa: F401
+from clawkeeper_core.watcher.providers import (  # noqa: F401
+    MINIMAX_ENDPOINTS,
+    MINIMAX_MODELS,
+    MiniMaxProviderConfig,
+)

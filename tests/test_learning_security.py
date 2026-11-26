@@ -389,7 +389,7 @@ def test_malformed_snapshot_returns_block_and_keeps_last_policy(bad):
         with pytest.raises(RuleSyncError):
             client.sync_rules()
         callback = Mock(return_value=None)
-        wrapped = _with_rule_sync(callback, client, SimpleNamespace(), {"action": "block"})
+        wrapped = _with_rule_sync(callback, lambda: client, SimpleNamespace(), {"action": "block"})
         assert wrapped() == {"action": "block"}
         callback.assert_not_called()
         assert rules.current_snapshot() is previous and client._rules is previous
@@ -399,7 +399,7 @@ def test_unexpected_sync_exception_and_mutated_block_result_are_safe():
     client = Mock()
     client.sync_rules.side_effect = RuntimeError("sensitive diagnostic")
     callback = Mock()
-    wrapped = _with_rule_sync(callback, client, SimpleNamespace(), {"action": "block"})
+    wrapped = _with_rule_sync(callback, lambda: client, SimpleNamespace(), {"action": "block"})
     first = wrapped()
     first["action"] = "allow"
     assert wrapped() == {"action": "block"}

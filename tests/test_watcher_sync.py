@@ -137,6 +137,38 @@ def test_shared_client_for_both_hermes_interceptors(monkeypatch, target, command
     assert agent._clawkeeper_decisions[-1]["source"] == "watcher:rule_sync"
 
 
+def test_hermes_guards_defer_calls_when_watcher_construction_fails(monkeypatch):
+    from clawkeeper_core.adapters.hermes import install
+
+    terminal, computer, manager = fake_hermes_modules(
+        lambda name, module: monkeypatch.setitem(sys.modules, name, module)
+    )
+    factory = Mock(side_effect=RuntimeError("private connection details"))
+    monkeypatch.setattr("clawkeeper_core.watcher.client.WatcherClient", factory)
+    agent = SimpleNamespace(session_id="s", tool_start_callback=None, tool_complete_callback=None)
+    judge = Mock()
+    install(judge, agent, watcher_url="http://watcher")
+    hook, = manager._hooks["pre_tool_call"]
+
+    assert terminal.callback("pwd") == "deny"
+    assert computer.callback("pwd") == "deny"
+    blocked = hook(tool_name="terminal", args={"command": "pwd"})
+    assert blocked["action"] == "block" and "ask operator" in blocked["message"]
+    assert [d["evidence"] for d in agent._clawkeeper_decisions] == [{"decision": "ask"}] * 3
+    judge.evaluate.assert_not_called()
+
+    # A later successful construction restores both paths without reinstalling Hermes.
+    factory.side_effect = None
+    client = factory.return_value
+    client.sync_rules.return_value = rules.make_snapshot([])
+    client.evaluate.return_value = {"decision": "allow"}
+    judge.evaluate.return_value = {"decision": "continue"}
+    assert hook(tool_name="terminal", args={"command": "pwd"}) is None
+    assert terminal.callback("pwd") == "once"
+    assert client.sync_rules.call_count == 2
+    client.evaluate.assert_called_once()
+
+
 def test_rules_endpoint_and_legacy_delete(isolated_learning):
     import hashlib
 

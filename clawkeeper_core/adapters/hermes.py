@@ -25,6 +25,7 @@ guard chain is additive.
 
 from __future__ import annotations
 
+from threading import Lock
 from typing import TYPE_CHECKING, Any, Callable
 
 from clawkeeper_core.adapters.base import (
@@ -45,6 +46,7 @@ from clawkeeper_core.schemas import AgentEvent
 if TYPE_CHECKING:
     from run_agent import AIAgent  # noqa: F401
 
+    from clawkeeper_core.watcher.client import WatcherClient
 
 # ─── Decision → Hermes-return mapping ──────────────────────────────────────
 
@@ -144,10 +146,7 @@ def install(
     """
     pre = pre_guards if pre_guards is not None else _default_pre_guards()
     post = post_guards if post_guards is not None else _default_post_guards()
-    watcher_client = None
-    if watcher_url:
-        from clawkeeper_core.watcher.client import WatcherClient  # noqa: PLC0415 -- optional Watcher
-        watcher_client = WatcherClient(base_url=watcher_url, on_unavailable="ask")
+    get_client = _lazy_watcher_client(watcher_url) if watcher_url else None
 
     # 1) Approval-callback path (Hermes-flagged commands → Judge decides).
     import tools.terminal_tool as terminal_tool
@@ -196,7 +195,7 @@ def install(
                          evidence=result if isinstance(result, dict) else {})
         return hermes_string
 
-    guarded_approval = _with_rule_sync(approval_cb, watcher_client, agent, "deny")
+    guarded_approval = _with_rule_sync(approval_cb, get_client, agent, "deny")
     terminal_tool.set_approval_callback(guarded_approval)
     computer_use_tool.set_approval_callback(guarded_approval)
 
@@ -204,7 +203,7 @@ def install(
     # documented Hermes API for blocking tool execution from outside the
     # built-in approval path — fires for every tool call (not just regex-
     # flagged ones), and Hermes honours the returned block message.
-    _register_pre_tool_call_hook(judge, agent, pre_guards=pre, watcher_client=watcher_client)
+    _register_pre_tool_call_hook(judge, agent, pre_guards=pre, get_client=get_client)
 
     # 2) Observation + proactive-guard hooks on the agent instance.
     _register_observers(judge, agent, pre_guards=pre, post_guards=post)
@@ -242,13 +241,30 @@ def _recent_messages(agent: Any, n: int = 20) -> list:
     return history[-n:]
 
 
-def _with_rule_sync(callback, watcher_client, agent, blocked_result):
-    if watcher_client is None:
+def _lazy_watcher_client(url: str) -> Callable[[], WatcherClient]:
+    """Share one client across interceptors and retry construction after a failure."""
+    client = None
+    lock = Lock()
+
+    def get_client() -> WatcherClient:
+        nonlocal client
+        with lock:
+            if client is None:
+                from clawkeeper_core.watcher.client import WatcherClient  # noqa: PLC0415
+
+                client = WatcherClient(base_url=url, on_unavailable="ask")
+            return client
+
+    return get_client
+
+
+def _with_rule_sync(callback, get_client, agent, blocked_result):
+    if get_client is None:
         return callback
 
     def synchronized(*args, **kwargs):
         try:
-            snapshot = watcher_client.sync_rules()
+            snapshot = get_client().sync_rules()
         except Exception:
             _record_decision(agent, "deny", source="watcher:rule_sync",
                              reason="Rule synchronization failed; ask operator", evidence={"decision": "ask"})
@@ -259,7 +275,7 @@ def _with_rule_sync(callback, watcher_client, agent, blocked_result):
     return synchronized
 
 
-def _register_pre_tool_call_hook(judge, agent, *, pre_guards, watcher_client=None):
+def _register_pre_tool_call_hook(judge, agent, *, pre_guards, get_client=None):
 
     """Register a Hermes plugin `pre_tool_call` hook that runs CK's guard chain.
 
@@ -301,9 +317,9 @@ def _register_pre_tool_call_hook(judge, agent, *, pre_guards, watcher_client=Non
             reason = blocking.get("reason", "blocked")
             return {"action": "block", "message": f"[ClawKeeper:{src}] {reason}"}
 
-        if watcher_client is not None:
+        if get_client is not None:
             try:
-                d = watcher_client.evaluate(
+                d = get_client().evaluate(
                     session_id=str(getattr(agent, "session_id", "default")),
                     tool_name=str(tool_name),
                     args=args if isinstance(args, dict) else {},
@@ -327,7 +343,7 @@ def _register_pre_tool_call_hook(judge, agent, *, pre_guards, watcher_client=Non
         return None
 
     manager._hooks.setdefault("pre_tool_call", []).append(_with_rule_sync(
-        ck_pre_tool_call, watcher_client, agent,
+        ck_pre_tool_call, get_client, agent,
         {"action": "block", "message": "[ClawKeeper:watcher] Rule synchronization failed; ask operator"},
     ))
 

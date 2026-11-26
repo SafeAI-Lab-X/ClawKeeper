@@ -222,7 +222,7 @@ def main() -> None:
     app = build_app()
     host = os.environ.get("CK_WATCHER_HOST", "127.0.0.1")
     port = int(os.environ.get("CK_WATCHER_PORT", "9099"))
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    uvicorn.run(app, host=host, port=port, workers=1, log_level="info")
 
 
 if __name__ == "__main__":

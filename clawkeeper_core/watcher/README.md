@@ -15,6 +15,16 @@ clawkeeper-watcher
 nohup python -m clawkeeper_core.watcher.daemon > watcher.log 2>&1 &
 ```
 
+Run one Watcher process per `~/.clawkeeper/learned_patterns.json`. The bundled
+launcher uses one Uvicorn worker. Multiple Hermes agents can share that Watcher
+over HTTP. For separate Watcher processes, give each its own storage directory
+(for example, separate service accounts or container home volumes).
+
+Learning, deletion, and migration during list or reload operations can all
+write the file. Atomic replacement protects readers from partial JSON, but
+independent writers can overwrite each other's updates. Stop the old process
+before starting a replacement on the same store, including during a rollout.
+
 The daemon binds to `127.0.0.1:9099` by default. All env knobs:
 
 | Var | Default | Purpose |
@@ -176,6 +186,10 @@ return HTTP 503 without overwriting it.
 Upgrade the daemon and Hermes adapter together. With `watcher_url` configured,
 the adapter shares one client between its `pre_tool_call` hook and approval
 callbacks. Each blocking entrypoint fetches policy before running local guards.
+Hermes registers both interception paths before creating the client. If client
+construction fails, approval callbacks return `deny` and the pre-tool hook
+blocks the call with an operator-review message. The audit decision is `ask`.
+The next call retries construction.
 Observers use the latest local snapshot without additional HTTP calls. Other
 adapters and standalone processes do not automatically receive these rules.
 

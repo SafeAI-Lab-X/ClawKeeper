@@ -25,6 +25,7 @@ guard chain is additive.
 
 from __future__ import annotations
 
+from functools import wraps
 from threading import Lock
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -262,6 +263,8 @@ def _with_rule_sync(callback, get_client, agent, blocked_result):
     if get_client is None:
         return callback
 
+    # Hermes inspects the registered callback to filter optional hook metadata.
+    @wraps(callback)
     def synchronized(*args, **kwargs):
         try:
             snapshot = get_client().sync_rules()

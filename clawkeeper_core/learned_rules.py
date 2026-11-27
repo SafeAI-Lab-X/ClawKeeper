@@ -354,6 +354,7 @@ def match_learned(target: str, event: dict) -> dict | None:
             "severity": "high",
             "source": f"learned:{target}:error",
             "error": "learned_rule_evaluation_failed",
+            "evidence": {"decision": "ask", "rules_version": snapshot.version},
             "reason": "Learned rules could not evaluate this call; ask operator",
         }
     if matched is None:

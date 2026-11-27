@@ -3,6 +3,7 @@
 # Numeric assertions and fixture-local imports keep scenario setup explicit.
 # ruff: noqa: PLR2004, PLC0415
 
+import inspect
 import json
 import select
 import socket
@@ -137,6 +138,57 @@ def test_shared_client_for_both_hermes_interceptors(monkeypatch, target, command
     assert agent._clawkeeper_decisions[-1]["source"] == "watcher:rule_sync"
 
 
+def test_watcher_hook_preserves_signature_for_hermes_dispatch(monkeypatch):
+    from clawkeeper_core.adapters.hermes import install
+
+    terminal, _, manager = fake_hermes_modules(
+        lambda name, module: monkeypatch.setitem(sys.modules, name, module)
+    )
+    agent = SimpleNamespace(session_id="s", tool_start_callback=None, tool_complete_callback=None)
+    install(Mock(), agent)
+    plain_hook, = manager._hooks["pre_tool_call"]
+    plain_approval = terminal.callback
+
+    client = Mock()
+    client.sync_rules.return_value = rules.make_snapshot([])
+    client.evaluate.return_value = {"decision": "allow"}
+    monkeypatch.setattr("clawkeeper_core.watcher.client.WatcherClient", Mock(return_value=client))
+    install(Mock(), agent, watcher_url="http://watcher")
+    hook = manager._hooks["pre_tool_call"][-1]
+    signature = inspect.signature(hook)
+    assert signature == inspect.signature(plain_hook)
+    assert inspect.signature(terminal.callback) == inspect.signature(plain_approval)
+
+    # Hermes forwards only declared keywords to a hook with a narrow signature.
+    args = {"command": "pwd"}
+    payload = {"tool_name": "terminal", "args": args, "turn_id": "turn", "api_request_id": "req"}
+    assert hook(**{k: v for k, v in payload.items() if k in signature.parameters}) is None
+    client.evaluate.assert_called_once_with(session_id="s", tool_name="terminal", args=args)
+
+
+def test_hermes_script_rule_failure_records_operator_decision(monkeypatch):
+    from clawkeeper_core.adapters.hermes import install
+
+    terminal, computer, _ = fake_hermes_modules(
+        lambda name, module: monkeypatch.setitem(sys.modules, name, module)
+    )
+    rule = rules.validate_rule(r"CK_CANARY_\d+", "script_body_scan")
+    client = Mock()
+    client.sync_rules.return_value = rules.make_snapshot([rule])
+    monkeypatch.setattr("clawkeeper_core.watcher.client.WatcherClient", Mock(return_value=client))
+    monkeypatch.setattr(rules, "search_groups", Mock(side_effect=TimeoutError))
+    agent = SimpleNamespace(session_id="s", tool_start_callback=None, tool_complete_callback=None)
+    judge = Mock()
+    install(judge, agent, watcher_url="http://watcher")
+
+    for tool in (terminal, computer):
+        assert tool.callback("pwd") == "deny"
+        decision = agent._clawkeeper_decisions[-1]
+        assert decision["source"] == "learned:script_body_scan:error"
+        assert decision["evidence"]["decision"] == "ask"
+    judge.evaluate.assert_not_called()
+
+
 def test_hermes_guards_defer_calls_when_watcher_construction_fails(monkeypatch):
     from clawkeeper_core.adapters.hermes import install
 
@@ -196,6 +248,32 @@ def test_rules_endpoint_and_legacy_delete(isolated_learning):
         assert client.delete(f"/watcher/learned/{legacy_hash}").json()["removed"]
         after = client.get("/watcher/rules")
         assert not after.json()["rules"] and after.headers["etag"] != first.headers["etag"]
+
+
+def test_delete_retries_policy_reload_after_persisting_removal(isolated_learning, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from clawkeeper_core.watcher.daemon import build_app
+    from clawkeeper_core.watcher.learner import StoreUnavailableError
+    from tests.test_learned_rules import candidate
+
+    assert isolated_learning.add(candidate())
+    with TestClient(build_app(watcher=Mock())) as client:
+        rule, = client.get("/watcher/rules").json()["rules"]
+        url = f"/watcher/learned/{rule['id']}"
+        with monkeypatch.context() as patch:
+            patch.setattr(isolated_learning, "all", Mock(side_effect=StoreUnavailableError))
+            first = client.delete(url)
+            assert first.status_code == 503 and first.json()["detail"]["removed"] is True
+            assert client.get("/watcher/rules").status_code == 503
+            retry = client.delete(url)
+            assert retry.status_code == 503 and retry.json()["detail"]["removed"] is False
+
+        assert isolated_learning.all() == []
+        retry = client.delete(url)
+        assert retry.status_code == 200 and retry.json() == {"removed": False}
+        active = client.get("/watcher/rules")
+        assert active.status_code == 200 and active.json()["rules"] == []
 
 
 def start_server(store_path, port=0):

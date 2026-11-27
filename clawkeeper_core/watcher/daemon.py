@@ -207,8 +207,13 @@ def build_app(watcher: Watcher | None = None) -> FastAPI:  # noqa: PLR0915 -- ro
             removed = STORE.remove(pattern_hash)
         except StoreUnavailableError as exc:
             raise HTTPException(status_code=503, detail="learned store unavailable") from exc
-        if removed:
+        if removed or policy_error():
             apply_learned_patterns()
+            if policy_error():
+                raise HTTPException(status_code=503, detail={
+                    "removed": removed,
+                    "message": "Learned policy unavailable. Retry the deletion or POST /watcher/rules/reload.",
+                })
         return {"removed": removed}
 
     return app
